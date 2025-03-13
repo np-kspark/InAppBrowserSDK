@@ -12,6 +12,7 @@ let package = Package(
             targets: ["InAppBrowserSDK"]),
     ],
     dependencies: [
+        .package(name: "GoogleMobileAds", url: "https://github.com/googleads/swift-package-manager-google-mobile-ads.git", from: "10.0.0"),
     ],
     targets: [
         .target(
