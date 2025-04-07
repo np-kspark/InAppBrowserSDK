@@ -53,6 +53,13 @@ extension InAppBrowserViewController {
                         callbackFunction: callbackFunction,
                         autoShow: true
                     });
+                },
+                        
+                // 웹뷰 닫기 기능 추가
+                closeWebView: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'close'
+                    });
                 }
             };
             

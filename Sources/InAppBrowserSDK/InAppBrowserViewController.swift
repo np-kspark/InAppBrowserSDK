@@ -412,6 +412,10 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
         
         switch message.name {
         case "iOSInterface":
+            if let type = body["type"] as? String, type == "close" {
+                closeWebView()
+                break
+            }
             if let adUnit = body["adUnit"] as? String,
                let callbackFunction = body["callbackFunction"] as? String {
                 if let type = body["type"] as? String {
@@ -454,6 +458,20 @@ extension InAppBrowserViewController {
         }
     }
     
+    // 웹뷰 닫기 기능
+    func closeWebView(){
+        print("testtest")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.dismiss(animated: true) {
+                // 웹뷰 정리
+                self.webView.stopLoading()
+                self.webView.configuration.userContentController.removeAllUserScripts()
+                self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
+            }
+        }
+    }
+
     // 전면 광고 표시
     func showInterstitialAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
