@@ -2,19 +2,29 @@ import UIKit
 @preconcurrency import WebKit
 import GoogleMobileAds
 
-class InAppBrowserViewController: UIViewController {
+class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private var webView: WKWebView!
     private var loadingCover: UIView!
     private var loadingIndicator: UIView! // 로딩 인디케이터 (프로그레스바 또는 이미지)
     private var rewardedAd: RewardedAd?
     private var interstitialAd: InterstitialAd?
     private var rewardedInterstitialAd: RewardedInterstitialAd?
-    private var currentAdUnitId: String?
+    private var currentAdUnitId: String = ""
     private var isLoadingAd: Bool = false
     private var isRewardEarned: Bool = false
     private var pendingCallbackFunction: String?
     
     private let config: InAppBrowserConfig
+    
+    private let adLoadTimeoutInterval: TimeInterval = 7.0
+    private var adLoadTimer: Timer?
+    private var adLoadTimeoutWorkItem: DispatchWorkItem?
+    private var isAdRequestTimeOut: Bool = false
+    
+    private var adUnitIndexCall: Int = 0
+    private var adUnitIndexDisplay: Int = 1
+    private var lastCallAdUnit: String = ""
+    private var callBackAdUnit: String = ""
     
     init(config: InAppBrowserConfig) {
         self.config = config
@@ -48,6 +58,7 @@ class InAppBrowserViewController: UIViewController {
         
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
         
@@ -409,7 +420,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
 extension InAppBrowserViewController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
-        
         switch message.name {
         case "iOSInterface":
             if let type = body["type"] as? String, type == "close" {
@@ -458,20 +468,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 웹뷰 닫기 기능
-    func closeWebView(){
-        print("testtest")
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.dismiss(animated: true) {
-                // 웹뷰 정리
-                self.webView.stopLoading()
-                self.webView.configuration.userContentController.removeAllUserScripts()
-                self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
-            }
-        }
-    }
-
     // 전면 광고 표시
     func showInterstitialAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
@@ -483,10 +479,23 @@ extension InAppBrowserViewController {
         }
     }
     
+    func closeWebView(){
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.dismiss(animated: true) {
+                // 웹뷰 정리
+                self.webView.stopLoading()
+                self.webView.configuration.userContentController.removeAllUserScripts()
+                self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
+            }
+        }
+    }
+    
     // 보상형 전면 광고 표시
     func showRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
         
+        self.pendingCallbackFunction = callbackFunction
         if let currentAd = rewardedInterstitialAd, currentAdUnitId == adUnit {
             showExistingRewardedInterstitialAd(callbackFunction: callbackFunction)
         } else {
@@ -497,7 +506,10 @@ extension InAppBrowserViewController {
     // 기존 보상형 전면 광고 표시
     private func showExistingRewardedInterstitialAd(callbackFunction: String) {
         guard let rewardedInterstitialAd = rewardedInterstitialAd else {
-            handleAdNotAvailable(callbackFunction: callbackFunction, type: "rewarded_interstitial")
+            handleAdNotAvailable(callbackFunction: callbackFunction, type: "rewarded_interstitial",adUnit:currentAdUnitId, adUnitIndex:adUnitIndexCall)
+            
+            adUnitIndexCall = 0
+            adUnitIndexDisplay = 1
             return
         }
         
@@ -510,46 +522,97 @@ extension InAppBrowserViewController {
     }
     
     // 자동 보상형 전면 광고 표시
-        func autoShowRewardedInterstitialAd(adUnit: String, delayMs: Int, callbackFunction: String) {
-            if isLoadingAd { return }
-            
-            if let currentAd = rewardedInterstitialAd, currentAdUnitId == adUnit {
-                // 딜레이 후 광고 표시
-                let delay = TimeInterval(delayMs) / 1000.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    self.showExistingRewardedInterstitialAd(callbackFunction: callbackFunction)
-                }
-            } else {
-                loadAutoShowRewardedInterstitialAd(adUnit: adUnit, delayMs: delayMs, callbackFunction: callbackFunction)
+    func autoShowRewardedInterstitialAd(adUnit: String, delayMs: Int, callbackFunction: String) {
+        if isLoadingAd { return }
+        
+        if let currentAd = rewardedInterstitialAd, currentAdUnitId == adUnit {
+            // 딜레이 후 광고 표시
+            let delay = TimeInterval(delayMs) / 1000.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                self.showExistingRewardedInterstitialAd(callbackFunction: callbackFunction)
             }
+        } else {
+            loadAutoShowRewardedInterstitialAd(adUnit: adUnit, delayMs: delayMs, callbackFunction: callbackFunction)
         }
-    
+    }
+    private func getNextAdUnitFromList(adUnits: [String], currentIndex: Int) -> String? {
+        // 다음 인덱스가 배열 범위 내에 있는지 확인
+        if currentIndex + 1 < adUnits.count {
+            return adUnits[currentIndex + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
     
     // 새 보상형 광고 로드
     private func loadNewRewardedAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
+        isAdRequestTimeOut = false
+        
+        adLoadTimeoutWorkItem?.cancel()
         
         // 세미콜론으로 분리된 광고 단위 처리
         let adUnits = adUnit.components(separatedBy: ";")
-        let currentAdUnit = adUnits[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
         
+        // 새 타임아웃 작업 생성
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isLoadingAd {
+                self.isAdRequestTimeOut = true
+                self.hideLoadingCover()
+                self.isLoadingAd = false
+                        
+                self.handleAdLoadError(callbackFunction: callbackFunction, type: "reward", adUnit: currentAdUnit, adUnitIndex: self.adUnitIndexDisplay)
+                
+                // 타임아웃 시 즉시 중단하고 인덱스 초기화
+                self.adUnitIndexCall = 0
+                self.adUnitIndexDisplay = 1
+            }
+        }
+        
+        // 타임아웃 작업 저장 및 예약
+        adLoadTimeoutWorkItem = timeoutWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
+        
+    
         RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
             guard let self = self else { return }
             
+            self.adLoadTimeoutWorkItem?.cancel()
+            self.adLoadTimeoutWorkItem = nil
+            
             self.hideLoadingCover()
             self.isLoadingAd = false
-            
+            if self.isAdRequestTimeOut {
+                    return
+                }
             if let error = error {
-                print("Failed to load rewarded ad with error: \(error.localizedDescription)")
                 
-                // 다음 광고 단위가 있으면 시도
-                if adUnits.count > 1 {
-                    let nextAdUnits = adUnits.dropFirst().joined(separator: ";")
-                    self.loadNewRewardedAd(adUnit: nextAdUnits, callbackFunction: callbackFunction)
+                // 다음 인덱스 계산
+                var currentIndex = 0
+                for i in 0..<adUnits.count {
+                    if adUnits[i].trimmingCharacters(in: .whitespacesAndNewlines) == currentAdUnit {
+                        currentIndex = i
+                        self.adUnitIndexDisplay += 1
+                        self.adUnitIndexCall += 1
+                        break
+                    }
+                }
+                
+                // 다음 광고 단위가 있는지 확인
+                let nextAdUnit = self.getNextAdUnitFromList(adUnits: adUnits, currentIndex: currentIndex)
+                
+                if nextAdUnit != nil {
+                    // 원래 adUnit 문자열을 그대로 재사용 (내부적으로 인덱스가 변경됨)
+                    self.loadNewRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
                 } else {
                     // 더 이상 시도할 광고 단위가 없는 경우
-                    self.handleAdLoadError(callbackFunction: callbackFunction)
+                    self.handleAdLoadError(callbackFunction: callbackFunction, type: "reward",adUnit:currentAdUnit,adUnitIndex:adUnitIndexDisplay)
+                    
+                    self.adUnitIndexCall = 0
+                    self.adUnitIndexDisplay = 1
                 }
                 return
             }
@@ -564,27 +627,72 @@ extension InAppBrowserViewController {
     private func loadNewInterstitialAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
+        isAdRequestTimeOut = false
+        
+        adLoadTimeoutWorkItem?.cancel()
         
         // 세미콜론으로 분리된 광고 단위 처리
         let adUnits = adUnit.components(separatedBy: ";")
-        let currentAdUnit = adUnits[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // 새 타임아웃 작업 생성
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isLoadingAd {
+                self.isAdRequestTimeOut = true
+                self.hideLoadingCover()
+                self.isLoadingAd = false
+            
+                self.handleAdLoadError(callbackFunction: callbackFunction, type: "interstitial", adUnit: currentAdUnit, adUnitIndex: self.adUnitIndexDisplay)
+                
+                // 타임아웃 시 즉시 중단하고 인덱스 초기화
+                self.adUnitIndexCall = 0
+                self.adUnitIndexDisplay = 1
+            }
+        }
+        
+        // 타임아웃 작업 저장 및 예약
+        adLoadTimeoutWorkItem = timeoutWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
         InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
             guard let self = self else { return }
             
+            self.adLoadTimeoutWorkItem?.cancel()
+            self.adLoadTimeoutWorkItem = nil
+            
             self.hideLoadingCover()
             self.isLoadingAd = false
             
+            if self.isAdRequestTimeOut {
+                    return
+                }
             if let error = error {
-                print("Failed to load interstitial ad with error: \(error.localizedDescription)")
                 
-                // 다음 광고 단위가 있으면 시도
-                if adUnits.count > 1 {
-                    let nextAdUnits = adUnits.dropFirst().joined(separator: ";")
-                    self.loadNewInterstitialAd(adUnit: nextAdUnits, callbackFunction: callbackFunction)
+                // 다음 인덱스 계산
+                var currentIndex = 0
+                for i in 0..<adUnits.count {
+                    if adUnits[i].trimmingCharacters(in: .whitespacesAndNewlines) == currentAdUnit {
+                        currentIndex = i
+                        self.adUnitIndexDisplay += 1
+                        self.adUnitIndexCall += 1
+                        break
+                    }
+                }
+                
+                // 다음 광고 단위가 있는지 확인
+                let nextAdUnit = self.getNextAdUnitFromList(adUnits: adUnits, currentIndex: currentIndex)
+                
+                if nextAdUnit != nil {
+                    // 원래 adUnit 문자열을 그대로 재사용 (내부적으로 인덱스가 변경됨)
+                    self.loadNewInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
                 } else {
                     // 더 이상 시도할 광고 단위가 없는 경우
-                    self.handleAdLoadError(callbackFunction: callbackFunction, type: "interstitial")
+                    self.handleAdLoadError(callbackFunction: callbackFunction, type: "interstitial",adUnit:currentAdUnit,adUnitIndex:adUnitIndexDisplay)
+                    
+                    self.adUnitIndexCall = 0
+                    self.adUnitIndexDisplay = 1
                 }
                 return
             }
@@ -592,6 +700,7 @@ extension InAppBrowserViewController {
             self.interstitialAd = ad
             self.currentAdUnitId = currentAdUnit
             self.showExistingInterstitialAd(callbackFunction: callbackFunction)
+            
         }
     }
     
@@ -599,30 +708,78 @@ extension InAppBrowserViewController {
     private func loadNewRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
+        isAdRequestTimeOut = false
+        
+        adLoadTimeoutWorkItem?.cancel()
         
         // 세미콜론으로 분리된 광고 단위 처리
         let adUnits = adUnit.components(separatedBy: ";")
-        let currentAdUnit = adUnits[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // 새 타임아웃 작업 생성
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isLoadingAd {
+                self.isAdRequestTimeOut = true
+                self.hideLoadingCover()
+                self.isLoadingAd = false
+            
+                self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial", adUnit: currentAdUnit, adUnitIndex: self.adUnitIndexDisplay)
+                
+                // 타임아웃 시 즉시 중단하고 인덱스 초기화
+                self.adUnitIndexCall = 0
+                self.adUnitIndexDisplay = 1
+            }
+        }
+        
+        // 타임아웃 작업 저장 및 예약
+        adLoadTimeoutWorkItem = timeoutWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
         RewardedInterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
             guard let self = self else { return }
             
+            
+            self.adLoadTimeoutWorkItem?.cancel()
+            self.adLoadTimeoutWorkItem = nil
+            
             self.hideLoadingCover()
             self.isLoadingAd = false
             
+            if self.isAdRequestTimeOut {
+                    return
+                }
             if let error = error {
-                print("Failed to load rewarded interstitial ad with error: \(error.localizedDescription)")
                 
-                // 다음 광고 단위가 있으면 시도
-                if adUnits.count > 1 {
-                    let nextAdUnits = adUnits.dropFirst().joined(separator: ";")
-                    self.loadNewRewardedInterstitialAd(adUnit: nextAdUnits, callbackFunction: callbackFunction)
+                // 다음 인덱스 계산
+                var currentIndex = 0
+                for i in 0..<adUnits.count {
+                    if adUnits[i].trimmingCharacters(in: .whitespacesAndNewlines) == currentAdUnit {
+                        currentIndex = i
+                        self.adUnitIndexDisplay += 1
+                        self.adUnitIndexCall += 1
+                        break
+                    }
+                }
+                
+                // 다음 광고 단위가 있는지 확인
+                let nextAdUnit = self.getNextAdUnitFromList(adUnits: adUnits, currentIndex: currentIndex)
+                
+                if nextAdUnit != nil {
+                    // 원래 adUnit 문자열을 그대로 재사용 (내부적으로 인덱스가 변경됨)
+                    self.loadNewRewardedInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
                 } else {
                     // 더 이상 시도할 광고 단위가 없는 경우
-                    self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial")
+                    self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial",adUnit:currentAdUnit,adUnitIndex:adUnitIndexDisplay)
+                    
+                    self.adUnitIndexCall = 0
+                    self.adUnitIndexDisplay = 1
                 }
                 return
             }
+            
+            
             
             self.rewardedInterstitialAd = ad
             self.currentAdUnitId = currentAdUnit
@@ -630,48 +787,79 @@ extension InAppBrowserViewController {
         }
     }
         
-        private func showExistingInterstitialAd(callbackFunction: String) {
-            guard let interstitialAd = interstitialAd else {
-                handleAdNotAvailable(callbackFunction: callbackFunction)
-                return
-            }
+    private func showExistingInterstitialAd(callbackFunction: String) {
+        guard let interstitialAd = interstitialAd else {
+            handleAdNotAvailable(callbackFunction: callbackFunction, type: "interstitial",adUnit:currentAdUnitId, adUnitIndex:adUnitIndexCall)
             
-            interstitialAd.fullScreenContentDelegate = self
-            interstitialAd.present(from: self)
-            pendingCallbackFunction = callbackFunction
+            adUnitIndexCall = 0
+            adUnitIndexDisplay = 1
+            return
         }
         
-        private func handleAdNotAvailable(callbackFunction: String) {
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"reward\", \"not_available\");")
-        }
+        interstitialAd.fullScreenContentDelegate = self
+        interstitialAd.present(from: self)
+        pendingCallbackFunction = callbackFunction
+    }
         
-        private func handleAdLoadError(callbackFunction: String) {
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"reward\", \"failed\");")
-        }
     private func loadAutoShowRewardedInterstitialAd(adUnit: String, delayMs: Int, callbackFunction: String) {
-            showLoadingCover()
-            isLoadingAd = true
+        showLoadingCover()
+        isLoadingAd = true
+        isAdRequestTimeOut = false
+        
+        adLoadTimer?.invalidate()
+        
+        // 세미콜론으로 분리된 광고 단위 처리
+        let adUnits = adUnit.components(separatedBy: ";")
+        let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        
+        // 타임아웃 타이머 설정
+        adLoadTimer = Timer.scheduledTimer(withTimeInterval: adLoadTimeoutInterval, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
             
-            // 세미콜론으로 분리된 광고 단위 처리
-            let adUnits = adUnit.components(separatedBy: ";")
-            let currentAdUnit = adUnits[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            if self.isLoadingAd {
+                self.isAdRequestTimeOut = true
+                self.hideLoadingCover()
+                self.isLoadingAd = false
             
+                self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial",adUnit:currentAdUnit,adUnitIndex:adUnitIndexCall)
+                
+                self.adUnitIndexCall = 0
+                self.adUnitIndexDisplay = 1
+            }
+        }
             RewardedInterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
                 guard let self = self else { return }
                 
                 self.hideLoadingCover()
                 self.isLoadingAd = false
                 
+                
                 if let error = error {
-                    print("Failed to load auto-show rewarded interstitial ad with error: \(error.localizedDescription)")
                     
-                    // 다음 광고 단위가 있으면 시도
-                    if adUnits.count > 1 {
-                        let nextAdUnits = adUnits.dropFirst().joined(separator: ";")
-                        self.loadAutoShowRewardedInterstitialAd(adUnit: nextAdUnits, delayMs: delayMs, callbackFunction: callbackFunction)
+                    // 다음 인덱스 계산
+                    var currentIndex = 0
+                    for i in 0..<adUnits.count {
+                        if adUnits[i].trimmingCharacters(in: .whitespacesAndNewlines) == currentAdUnit {
+                            currentIndex = i
+                            self.adUnitIndexDisplay += 1
+                            self.adUnitIndexCall += 1
+                            break
+                        }
+                    }
+                    
+                    // 다음 광고 단위가 있는지 확인
+                    let nextAdUnit = self.getNextAdUnitFromList(adUnits: adUnits, currentIndex: currentIndex)
+                    
+                    if nextAdUnit != nil {
+                        // 원래 adUnit 문자열을 그대로 재사용 (내부적으로 인덱스가 변경됨)
+                        self.loadNewRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
                     } else {
                         // 더 이상 시도할 광고 단위가 없는 경우
-                        self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial")
+                        self.handleAdLoadError(callbackFunction: callbackFunction, type: "rewarded_interstitial",adUnit:currentAdUnit,adUnitIndex:adUnitIndexDisplay)
+                        
+                        self.adUnitIndexCall = 0
+                        self.adUnitIndexDisplay = 1
                     }
                     return
                 }
@@ -684,33 +872,39 @@ extension InAppBrowserViewController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     self.showExistingRewardedInterstitialAd(callbackFunction: callbackFunction)
                 }
+                
+                self.adUnitIndexCall = 0
+                self.adUnitIndexDisplay = 1
             }
         }
         
         // 기존 보상형 광고 표시
         private func showExistingRewardedAd(callbackFunction: String) {
             guard let rewardedAd = rewardedAd else {
-                handleAdNotAvailable(callbackFunction: callbackFunction)
+                handleAdNotAvailable(callbackFunction: callbackFunction, type: "rewarded",adUnit:currentAdUnitId, adUnitIndex:adUnitIndexCall )
+                
+                adUnitIndexCall = 0
+                adUnitIndexDisplay = 1
                 return
             }
             
             rewardedAd.fullScreenContentDelegate = self
             
+            self.pendingCallbackFunction = callbackFunction
             rewardedAd.present(from: self) { [weak self] in
                 self?.isRewardEarned = true
-                self?.pendingCallbackFunction = callbackFunction
             }
         }
         
         
         // 광고 사용 불가능 처리
-        private func handleAdNotAvailable(callbackFunction: String, type: String = "reward") {
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"not_available\");")
+        private func handleAdNotAvailable(callbackFunction: String, type: String, adUnit: String, adUnitIndex: Int) {
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"failed\", \"\(adUnit)\", \(adUnitIndex));")
         }
         
         // 광고 로드 오류 처리
-        private func handleAdLoadError(callbackFunction: String, type: String = "reward") {
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"failed\");")
+        private func handleAdLoadError(callbackFunction: String, type: String, adUnit: String, adUnitIndex: Int) {
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"failed\", \"\(adUnit)\", \(adUnitIndex));")
         }
         
         // 광고 상태 초기화
@@ -718,7 +912,7 @@ extension InAppBrowserViewController {
             interstitialAd = nil
             rewardedAd = nil
             rewardedInterstitialAd = nil
-            currentAdUnitId = nil
+            currentAdUnitId = ""
             isLoadingAd = false
             if !isRewardEarned {
                 pendingCallbackFunction = nil
@@ -731,26 +925,31 @@ extension InAppBrowserViewController {
         func adDidDismissFullScreenContent(_ ad: FullScreenPresentingAd) {
             // 광고 유형 식별
             var adType = "reward"
+            var adname = currentAdUnitId
+            var adnum = adUnitIndexDisplay
             if ad is InterstitialAd {
                 adType = "interstitial"
             } else if ad is RewardedInterstitialAd {
                 adType = "rewarded_interstitial"
             }
-            
+            print(isRewardEarned)
             if isRewardEarned {
+                
                 if let callbackFunction = pendingCallbackFunction {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                        self?.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"success\");")
+                        self?.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"success\", \"\(adname)\", \(adnum));")
                         self?.isRewardEarned = false
                         self?.pendingCallbackFunction = nil
                     }
                 }
             } else {
                 if let callbackFunction = pendingCallbackFunction {
-                    webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"cancelled\");")
+                    webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"cancelled\", \"\(currentAdUnitId)\", \(adUnitIndexDisplay));")
                 }
             }
             resetAdState()
+            adUnitIndexCall = 0
+            adUnitIndexDisplay = 1
         }
         
         func ad(_ ad: FullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
@@ -763,8 +962,46 @@ extension InAppBrowserViewController {
             }
             
             if let callbackFunction = pendingCallbackFunction {
-                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"failed\");")
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"failed\", \"\(currentAdUnitId)\", \(adUnitIndexDisplay));")
             }
             resetAdState()
         }
     }
+// MARK: - WKUIDelegate
+extension InAppBrowserViewController {
+    // JavaScript alert 처리
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+            completionHandler()
+        })
+        present(alertController, animated: true, completion: nil)
+    }
+    
+    // JavaScript confirm 처리
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
+            completionHandler(false)
+        })
+        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+            completionHandler(true)
+        })
+        present(alertController, animated: true, completion: nil)
+    }
+    
+    // JavaScript prompt 처리
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        let alertController = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+        alertController.addTextField { textField in
+            textField.text = defaultText
+        }
+        alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
+            completionHandler(nil)
+        })
+        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+            completionHandler(alertController.textFields?.first?.text)
+        })
+        present(alertController, animated: true, completion: nil)
+    }
+}
