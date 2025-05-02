@@ -41,6 +41,22 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         setupMainLayout()
         setupWebView()
         setupJavaScriptInterface(for: self.webView)
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object:nil
+        )
+    }
+    @objc private func appDidBecomeActive(){
+        if webView != nil {
+            let script = "window.dispatchEvent(new Event('visibilitychange'));"
+            webView.evaluateJavaScript(script, completionHandler:nil)
+        }
+    }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     private func setupMainLayout() {
@@ -55,6 +71,15 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         let userContentController = WKUserContentController()
         userContentController.add(self, name: "iOSInterface")
         config.userContentController = userContentController
+
+        config.preferences.javaScriptEnabled = true  // JavaScript 활성화
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true  // 팝업 허용
+
+        
+        config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        config.defaultWebpagePreferences = preferences
         
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -413,6 +438,9 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         hideLoadingCover()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.requestAdIdConsentAndNotifyWeb()
+        }
     }
 }
 
@@ -422,33 +450,95 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
         guard let body = message.body as? [String: Any] else { return }
         switch message.name {
         case "iOSInterface":
-            if let type = body["type"] as? String, type == "close" {
-                closeWebView()
-                break
-            }
-            if let adUnit = body["adUnit"] as? String,
-               let callbackFunction = body["callbackFunction"] as? String {
-                if let type = body["type"] as? String {
-                    switch type {
-                    case "interstitial":
+            if let type = body["type"] as? String {
+                switch type {
+                case "close":
+                    closeWebView()
+                    
+                case "interstitial":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
                         showInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
-                    case "rewarded_interstitial":
+                    }
+                    
+                case "rewarded_interstitial":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
                         showRewardedInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
-                    default:
+                    }
+                    
+                    // 자동 광고 표시 처리
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String,
+                       let delayMs = body["delayMs"] as? Int,
+                       body["autoShow"] as? Bool == true {
+                        autoShowRewardedInterstitialAd(adUnit: adUnit, delayMs: delayMs, callbackFunction: callbackFunction)
+                    }
+                    
+                case "reward":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
                         showRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
                     }
-                } else {
+                
+                // 광고 ID 관련 새로운 메시지 타입 처리
+                case "requestAdIdConsent":
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        requestAdIdConsent(callbackFunction: callbackFunction)
+                    }
+                    
+                case "checkAdIdConsentStatus":
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        checkAdIdConsentStatus(callbackFunction: callbackFunction)
+                    }
+                case "requestAdidConsentAgain":
+                    // 기존 동의 상태 초기화
+                    AdConsentManager.shared.resetConsentStatus()
+                    
+                    // 웹페이지에 재설정 알림
+                    webView.evaluateJavaScript("") { _, _ in
+                        // 명시적으로 동의 창 표시 (기존 상태 확인 로직 건너뛰기)
+                        let alertController = UIAlertController(
+                            title: "광고 ID 수집 동의",
+                            message: "더 나은 서비스 제공을 위해 광고 식별자를 수집하는 것에 동의하시겠습니까? 이 정보는 맞춤형 광고 제공에 사용됩니다.",
+                            preferredStyle: .alert
+                        )
+                        
+                        let denyAction = UIAlertAction(title: "거부", style: .cancel) { _ in
+                            AdConsentManager.shared.setConsentStatus(.denied)
+                            self.notifyWebWithAdId("")
+                        }
+                        
+                        let allowAction = UIAlertAction(title: "동의", style: .default) { _ in
+                            AdConsentManager.shared.setConsentStatus(.granted)
+                            let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                            self.notifyWebWithAdId(adId)
+                        }
+                        
+                        alertController.addAction(denyAction)
+                        alertController.addAction(allowAction)
+                        
+                        self.present(alertController, animated: true)
+                    }
+                    
+                default:
+                    break
+                }
+            } else {
+                if let adUnit = body["adUnit"] as? String,
+                   let callbackFunction = body["callbackFunction"] as? String {
                     showRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
+                }
+                
+                // 자동 광고 표시 처리
+                if let adUnit = body["adUnit"] as? String,
+                   let callbackFunction = body["callbackFunction"] as? String,
+                   let delayMs = body["delayMs"] as? Int,
+                   body["autoShow"] as? Bool == true {
+                    autoShowRewardedInterstitialAd(adUnit: adUnit, delayMs: delayMs, callbackFunction: callbackFunction)
                 }
             }
             
-            // 자동 광고 표시 처리
-            if let adUnit = body["adUnit"] as? String,
-               let callbackFunction = body["callbackFunction"] as? String,
-               let delayMs = body["delayMs"] as? Int,
-               body["autoShow"] as? Bool == true {
-                autoShowRewardedInterstitialAd(adUnit: adUnit, delayMs: delayMs, callbackFunction: callbackFunction)
-            }
         default:
             break
         }
@@ -457,6 +547,42 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
 
 // MARK: - Ad Related Functions
 extension InAppBrowserViewController {
+    // JavaScript alert 처리
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+                completionHandler()
+            })
+            present(alertController, animated: true, completion: nil)
+        }
+        
+        // JavaScript confirm 처리
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
+                completionHandler(false)
+            })
+            alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+                completionHandler(true)
+            })
+            present(alertController, animated: true, completion: nil)
+        }
+        
+        // JavaScript prompt 처리
+        func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+            let alertController = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+            alertController.addTextField { textField in
+                textField.text = defaultText
+            }
+            alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
+                completionHandler(nil)
+            })
+            alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
+                completionHandler(alertController.textFields?.first?.text)
+            })
+            present(alertController, animated: true, completion: nil)
+        }
+        
     // 보상형 광고 표시
     func showRewardedAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
@@ -918,6 +1044,49 @@ extension InAppBrowserViewController {
                 pendingCallbackFunction = nil
             }
         }
+    
+        // 광고 ID 수집 동의 요청 및 처리
+        func requestAdIdConsent(callbackFunction: String) {
+            let consentStatus = AdConsentManager.shared.getConsentStatus()
+            
+            // 이미 동의한 경우 바로 결과 반환
+            if consentStatus == .granted {
+                let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'granted', adId: '\(adId)'});")
+                notifyWebWithAdId(adId)
+                return
+            }
+            
+            // 동의하지 않았거나 알 수 없는 상태인 경우 동의 요청
+            AdConsentManager.shared.requestConsent(from: self) { granted in
+                if granted {
+                    let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                    self.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'granted', adId: '\(adId)'});")
+                    self.notifyWebWithAdId(adId)
+                } else {
+                    self.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'denied', adId: ''});")
+                    self.notifyWebWithAdId("")
+                }
+            }
+        }
+        
+        // 광고 ID 수집 동의 상태 초기화 (재요청용)
+        func resetAdIdConsent(callbackFunction: String) {
+            AdConsentManager.shared.resetConsentStatus()
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'reset'});")
+        }
+        
+        // 현재 광고 ID 수집 동의 상태 확인
+        func checkAdIdConsentStatus(callbackFunction: String) {
+            let status = AdConsentManager.shared.getConsentStatus()
+            var adId = ""
+            
+            if status == .granted {
+                adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+            }
+            
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: '\(status.rawValue)', adId: '\(adId)'});")
+        }
     }
 
     // MARK: - FullScreenContentDelegate
@@ -969,39 +1138,73 @@ extension InAppBrowserViewController {
     }
 // MARK: - WKUIDelegate
 extension InAppBrowserViewController {
-    // JavaScript alert 처리
-    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
-            completionHandler()
-        })
-        present(alertController, animated: true, completion: nil)
-    }
     
-    // JavaScript confirm 처리
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        let alertController = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-        alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
-            completionHandler(false)
-        })
-        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
-            completionHandler(true)
-        })
-        present(alertController, animated: true, completion: nil)
-    }
-    
-    // JavaScript prompt 처리
-    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
-        let alertController = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
-        alertController.addTextField { textField in
-            textField.text = defaultText
+    // 광고 ID 동의 요청 및 웹 페이지의 onReceiveAdId 함수 호출
+    func requestAdIdConsentAndNotifyWeb() {
+        let consentStatus = AdConsentManager.shared.getConsentStatus()
+        
+        switch consentStatus {
+        case .granted:
+            // 이미 동의한 경우 바로 광고 ID 전달
+            let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+            notifyWebWithAdId(adId)
+            
+        case .denied:
+            // 이미 거부한 경우 빈 ID 전달
+            notifyWebWithAdId("")
+            
+        case .unknown:
+            // 아직 선택하지 않은 경우에만 동의 요청
+            AdConsentManager.shared.requestConsent(from: self) { granted in
+                if granted {
+                    let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                    self.notifyWebWithAdId(adId)
+                } else {
+                    self.notifyWebWithAdId("")
+                }
+            }
         }
-        alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
-            completionHandler(nil)
-        })
-        alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
-            completionHandler(alertController.textFields?.first?.text)
-        })
-        present(alertController, animated: true, completion: nil)
+    }
+    func notifyWebWithAdId(_ adId: String) {
+        //print("광고 ID 전달 시도: \(adId)")
+        
+        // 자바스크립트 실행 방식 개선
+        let script = """
+        (function() {
+            try {
+                // 1. 함수가 존재하는지 확인
+                if (typeof window.onReceiveAdId === 'function') {
+                    // 2. 함수 직접 호출
+                    window.onReceiveAdId('\(adId)');
+                    return true;
+                } else {
+                    // 3. 함수가 없으면 전역 변수 설정 
+                    window._pendingAdId = '\(adId)';
+                    
+                    // 4. 함수 정의 및 즉시 호출
+                    window.onReceiveAdId = function(receivedAdId) {
+                        alert('광고 ID: ' + receivedAdId);
+                    };
+                    
+                    // 5. 정의된 함수 즉시 호출
+                    window.onReceiveAdId('\(adId)');
+                    
+                    return false;
+                }
+            } catch(e) {
+                alert('광고 ID 전달 중 오류 발생: ' + e);
+                return false;
+            }
+        })();
+        """
+        
+        // 중요: 여기에 실행 코드 추가
+        webView.evaluateJavaScript(script) { (result, error) in
+            if let error = error {
+                print("광고 ID 전달 오류: \(error.localizedDescription)")
+            } else if let success = result as? Bool {
+                print("광고 ID 전달 결과: \(success ? "성공" : "실패")")
+            }
+        }
     }
 }

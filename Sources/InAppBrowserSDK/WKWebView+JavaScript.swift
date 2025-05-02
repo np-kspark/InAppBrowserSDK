@@ -60,7 +60,31 @@ extension InAppBrowserViewController {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'close'
                     });
+                },
+        
+                // 광고 ID 수집 동의 요청
+                requestAdIdConsent: function(callbackFunction) {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'requestAdIdConsent',
+                        callbackFunction: callbackFunction
+                    });
+                },
+                
+                // 광고 ID 수집 동의 상태 확인
+                checkAdIdConsentStatus: function(callbackFunction) {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'checkAdIdConsentStatus',
+                        callbackFunction: callbackFunction
+                    });
+                },
+                
+                // 광고 ID 수집 동의 초기화 (재요청용)
+                requestAdidConsentAgain: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'requestAdidConsentAgain'
+                    });
                 }
+        
             };
             
             // Android 인터페이스와의 호환성을 위한 별칭
@@ -72,5 +96,6 @@ extension InAppBrowserViewController {
                                     forMainFrameOnly: true)
         
         webView.configuration.userContentController.addUserScript(userScript)
+//        webView.configuration.userContentController.add(self, name: "iOSInterface")
     }
 }

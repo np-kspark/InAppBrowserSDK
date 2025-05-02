@@ -1,45 +1,34 @@
 import Foundation
-
 import UIKit
 
 public class InAppBrowserConfig {
-    public var toolbarMode: String = "dark"
-    public var toolbarTitle: String = "Default Title"
-    public var titleAlignment: String = "left"
-    public var url: String?
-    public var isFullscreen: Bool = true
-    public var isDebugEnabled: Bool = false
-    public var userAgent: String = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    var toolbarMode: String = "dark"
+    var toolbarTitle: String = "Default Title"
+    var titleAlignment: String = "left"
+    var url: String?
+    var isFullscreen: Bool = true
+    var isDebugEnabled: Bool = false
+    var userAgent: String = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     
     // UI 커스터마이징 옵션
-    public var fontFamily: String?
-    public var fontSize: Int = 18
-    
-    #if canImport(UIKit)
-    public var toolbarBackgroundColor: UIColor?
-    public var titleTextColor: UIColor?
-    public var loadingBackgroundColor: UIColor?
-    public var progressBarColor: UIColor?
-    #else
-    // iOS가 아닌 환경을 위한 더미 프로퍼티
-    public var toolbarBackgroundColor: Any?
-    public var titleTextColor: Any?
-    public var loadingBackgroundColor: Any?
-    public var progressBarColor: Any?
-    #endif
-    
-    public var backButtonImageName: String?
-    public var closeButtonImageName: String?
+    var fontFamily: String?
+    var fontSize: Int = 18
+    var toolbarBackgroundColor: UIColor?
+    var titleTextColor: UIColor?
+    var backButtonImageName: String?
+    var closeButtonImageName: String?
     
     // 로딩 커스터마이징 옵션
-    public var progressBarStyle: Int = 0 // 0: 기본 원형, 1: 수평, 2: 사용자 정의 이미지
-    public var progressBarImageName: String?
-    public var backButtonLeftMargin: Int = 0
-    public var closeButtonRightMargin: Int = 0
-    public var backButtonIconSize: Int = 33
-    public var closeButtonIconSize: Int = 33
-    public var toolbarHeight: Int = 56
-    public var progressBarAnimationDuration: Double = 3.0  // 기본값 3초
+    var loadingBackgroundColor: UIColor?
+    var progressBarColor: UIColor?
+    var progressBarStyle: Int = 0 // 0: 기본 원형, 1: 수평, 2: 사용자 정의 이미지
+    var progressBarImageName: String?
+    var backButtonLeftMargin: Int = 0
+    var closeButtonRightMargin: Int = 0
+    var backButtonIconSize: Int = 33
+    var closeButtonIconSize: Int = 33
+    var toolbarHeight: Int = 56
+    var progressBarAnimationDuration: Double = 3.0  // 기본값 1초
     
     private init() {}
     
@@ -96,7 +85,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        #if canImport(UIKit)
         public func setToolbarBackgroundColor(_ color: UIColor) -> Builder {
             config.toolbarBackgroundColor = color
             return self
@@ -107,17 +95,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        public func setLoadingBackgroundColor(_ color: UIColor) -> Builder {
-            config.loadingBackgroundColor = color
-            return self
-        }
-        
-        public func setProgressBarColor(_ color: UIColor) -> Builder {
-            config.progressBarColor = color
-            return self
-        }
-        #endif
-        
         public func setBackButtonIcon(_ imageName: String) -> Builder {
             config.backButtonImageName = imageName
             return self
@@ -125,6 +102,17 @@ public class InAppBrowserConfig {
         
         public func setCloseButtonIcon(_ imageName: String) -> Builder {
             config.closeButtonImageName = imageName
+            return self
+        }
+        
+        // 로딩 커스터마이징 옵션 추가
+        public func setLoadingBackgroundColor(_ color: UIColor) -> Builder {
+            config.loadingBackgroundColor = color
+            return self
+        }
+        
+        public func setProgressBarColor(_ color: UIColor) -> Builder {
+            config.progressBarColor = color
             return self
         }
         
@@ -154,16 +142,15 @@ public class InAppBrowserConfig {
             config.toolbarHeight = height
             return self
         }
-        
         public func setBackButtonIconSize(_ size: Int) -> Builder {
             config.backButtonIconSize = size
             return self
         }
-        
         public func setCloseButtonIconSize(_ size: Int) -> Builder {
             config.closeButtonIconSize = size
             return self
         }
+        
         
         public func build() -> InAppBrowserConfig {
             return config
