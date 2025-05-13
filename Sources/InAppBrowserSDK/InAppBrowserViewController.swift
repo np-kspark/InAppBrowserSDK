@@ -423,24 +423,33 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        let currentHost = URL(string: config.url ?? "")?.host
-        let newHost = url.host
-        
+        // Google 로그인 관련 URL은 허용
         if url.absoluteString.contains("accounts.google.com") ||
            url.absoluteString.contains("oauth2.googleapis.com") {
             decisionHandler(.allow)
             return
         }
         
-        if currentHost != newHost {
-            UIApplication.shared.open(url)
-            decisionHandler(.cancel)
+        // 광고 클릭 시에만 외부 브라우저로 열기 (사용자 액션 확인)
+        if navigationAction.navigationType == .linkActivated {
+            let currentHost = URL(string: config.url ?? "")?.host
+            let newHost = url.host
+            
+            if currentHost != newHost {
+                UIApplication.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
+        }
+        
+        // iframe 내에서의 자동 리다이렉트 허용 (MainFrame이 아닌 경우)
+        if let isMainFrame = navigationAction.targetFrame?.isMainFrame, !isMainFrame {
+            decisionHandler(.allow)
             return
         }
         
         decisionHandler(.allow)
     }
-    
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         showLoadingCover()
     }
