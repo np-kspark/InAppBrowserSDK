@@ -71,12 +71,16 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         let userContentController = WKUserContentController()
         userContentController.add(self, name: "iOSInterface")
         config.userContentController = userContentController
-
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        
         config.preferences.javaScriptEnabled = true  // JavaScript 활성화
         config.preferences.javaScriptCanOpenWindowsAutomatically = true  // 팝업 허용
 
         
-        config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        // config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        let dataStore = WKWebsiteDataStore.default()
+        config.websiteDataStore = dataStore
         let preferences = WKWebpagePreferences()
         preferences.allowsContentJavaScript = true
         config.defaultWebpagePreferences = preferences
@@ -86,6 +90,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         webView.uiDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
+        MobileAds.shared.register(webView)
         
         // Setup loading cover
         setupLoadingCover()
@@ -204,7 +209,11 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     private func setupWebView() {
             if let url = URL(string: config.url ?? "") {
+                let websiteDataStore = WKWebsiteDataStore.default()
+                let httpCookieStore = websiteDataStore.httpCookieStore
+                
                 var request = URLRequest(url: url)
+                request.httpShouldHandleCookies = true
                 request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
                 webView.load(request)
             }
@@ -1179,17 +1188,17 @@ extension InAppBrowserViewController {
                     return true;
                 } else {
                     // 3. 함수가 없으면 전역 변수 설정 
-                    window._pendingAdId = '\(adId)';
+                    //window._pendingAdId = '\(adId)';
                     
                     // 4. 함수 정의 및 즉시 호출
-                    window.onReceiveAdId = function(receivedAdId) {
-                        alert('광고 ID: ' + receivedAdId);
-                    };
+                    //window.onReceiveAdId = function(receivedAdId) {
+                    //    alert('광고 ID: ' + receivedAdId);
+                    //};
                     
                     // 5. 정의된 함수 즉시 호출
-                    window.onReceiveAdId('\(adId)');
+                    //window.onReceiveAdId('\(adId)');
                     
-                    return false;
+                    //return false;
                 }
             } catch(e) {
                 alert('광고 ID 전달 중 오류 발생: ' + e);
