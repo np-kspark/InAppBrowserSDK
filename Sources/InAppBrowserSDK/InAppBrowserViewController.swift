@@ -1,6 +1,7 @@
 import UIKit
-@preconcurrency import WebKit
+import WebKit
 import GoogleMobileAds
+import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private var webView: WKWebView!
@@ -69,21 +70,30 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         // Setup WebView
         let config = WKWebViewConfiguration()
         let userContentController = WKUserContentController()
+        let cookieStorage = HTTPCookieStorage.shared
+        cookieStorage.cookieAcceptPolicy = .always
+        
         userContentController.add(self, name: "iOSInterface")
         config.userContentController = userContentController
         config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
         
-        config.preferences.javaScriptEnabled = true  // JavaScript 활성화
-        config.preferences.javaScriptCanOpenWindowsAutomatically = true  // 팝업 허용
-
+        // iOS 14 이하 대응 코드
+        if #available(iOS 14.0, *) {
+            config.mediaTypesRequiringUserActionForPlayback = []
+            
+            let preferences = WKWebpagePreferences()
+            preferences.allowsContentJavaScript = true
+            config.defaultWebpagePreferences = preferences
+        } else {
+            // iOS 14 이전 버전용 코드
+            config.mediaPlaybackRequiresUserAction = false
+            config.preferences.javaScriptEnabled = true
+        }
         
-        // config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        
         let dataStore = WKWebsiteDataStore.default()
         config.websiteDataStore = dataStore
-        let preferences = WKWebpagePreferences()
-        preferences.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = preferences
         
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -208,16 +218,16 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     }
     
     private func setupWebView() {
-            if let url = URL(string: config.url ?? "") {
-                let websiteDataStore = WKWebsiteDataStore.default()
-                let httpCookieStore = websiteDataStore.httpCookieStore
-                
-                var request = URLRequest(url: url)
-                request.httpShouldHandleCookies = true
-                request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
-                webView.load(request)
-            }
+        if let url = URL(string: config.url ?? "") {
+            let websiteDataStore = WKWebsiteDataStore.default()
+            let httpCookieStore = websiteDataStore.httpCookieStore
+            
+            var request = URLRequest(url: url)
+            request.httpShouldHandleCookies = true
+            request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
+            webView.load(request)
         }
+    }
         
     private func setupLoadingCover() {
             loadingCover = UIView()
@@ -693,13 +703,14 @@ extension InAppBrowserViewController {
         isLoadingAd = true
         isAdRequestTimeOut = false
         
+        // 기존 타임아웃 작업 취소
         adLoadTimeoutWorkItem?.cancel()
         
         // 세미콜론으로 분리된 광고 단위 처리
         let adUnits = adUnit.components(separatedBy: ";")
         let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // 새 타임아웃 작업 생성
+        // 새 타임아웃 작업 생성 (iOS 13 이하 호환)
         let timeoutWork = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             
@@ -732,7 +743,7 @@ extension InAppBrowserViewController {
             if self.isAdRequestTimeOut {
                     return
                 }
-            if let error = error {
+            if error != nil {
                 
                 // 다음 인덱스 계산
                 var currentIndex = 0
@@ -812,7 +823,7 @@ extension InAppBrowserViewController {
             if self.isAdRequestTimeOut {
                     return
                 }
-            if let error = error {
+            if error != nil {
                 
                 // 다음 인덱스 계산
                 var currentIndex = 0
@@ -894,7 +905,7 @@ extension InAppBrowserViewController {
             if self.isAdRequestTimeOut {
                     return
                 }
-            if let error = error {
+            if error != nil {
                 
                 // 다음 인덱스 계산
                 var currentIndex = 0
@@ -979,7 +990,7 @@ extension InAppBrowserViewController {
                 self.isLoadingAd = false
                 
                 
-                if let error = error {
+                if error != nil {
                     
                     // 다음 인덱스 계산
                     var currentIndex = 0
@@ -1112,8 +1123,8 @@ extension InAppBrowserViewController {
         func adDidDismissFullScreenContent(_ ad: FullScreenPresentingAd) {
             // 광고 유형 식별
             var adType = "reward"
-            var adname = currentAdUnitId
-            var adnum = adUnitIndexDisplay
+            let adname = currentAdUnitId
+            let adnum = adUnitIndexDisplay
             if ad is InterstitialAd {
                 adType = "interstitial"
             } else if ad is RewardedInterstitialAd {
@@ -1157,30 +1168,32 @@ extension InAppBrowserViewController {
 // MARK: - WKUIDelegate
 extension InAppBrowserViewController {
     
-    // 광고 ID 동의 요청 및 웹 페이지의 onReceiveAdId 함수 호출
     func requestAdIdConsentAndNotifyWeb() {
-        let consentStatus = AdConsentManager.shared.getConsentStatus()
-        
-        switch consentStatus {
-        case .granted:
-            // 이미 동의한 경우 바로 광고 ID 전달
-            let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
-            notifyWebWithAdId(adId)
+        if #available(iOS 14.5, *) {
+            let consentStatus = AdConsentManager.shared.getConsentStatus()
             
-        case .denied:
-            // 이미 거부한 경우 빈 ID 전달
-            notifyWebWithAdId("")
-            
-        case .unknown:
-            // 아직 선택하지 않은 경우에만 동의 요청
-            AdConsentManager.shared.requestConsent(from: self) { granted in
-                if granted {
-                    let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
-                    self.notifyWebWithAdId(adId)
-                } else {
-                    self.notifyWebWithAdId("")
+            switch consentStatus {
+            case .granted:
+                let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                notifyWebWithAdId(adId)
+                
+            case .denied:
+                notifyWebWithAdId("")
+                
+            case .unknown:
+                AdConsentManager.shared.requestConsent(from: self) { granted in
+                    if granted {
+                        let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+                        self.notifyWebWithAdId(adId)
+                    } else {
+                        self.notifyWebWithAdId("")
+                    }
                 }
             }
+        } else {
+            // iOS 14.5 이전 버전에서는 동의 없이 광고 ID 사용 가능
+            let adId = AdConsentManager.shared.getAdvertisingID() ?? ""
+            notifyWebWithAdId(adId)
         }
     }
     func notifyWebWithAdId(_ adId: String) {
@@ -1223,6 +1236,14 @@ extension InAppBrowserViewController {
             } else if let success = result as? Bool {
                 print("광고 ID 전달 결과: \(success ? "성공" : "실패")")
             }
+        }
+    }
+}
+
+extension WKWebView {
+    func evaluateJavaScriptSafely(_ script: String, completion: ((Any?, Error?) -> Void)? = nil) {
+        DispatchQueue.main.async {
+            self.evaluateJavaScript(script, completionHandler: completion)
         }
     }
 }
