@@ -64,7 +64,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     public func closeWebView(){
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.delegate?.browserDidClose(self)
+            self.delegate?.browserDidClose()
             self.dismiss(animated: true) {
                 // 웹뷰 정리
                 self.webView.stopLoading()
@@ -413,13 +413,13 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             }else {
 //                dismiss(animated: true)
                 // delegate 호출 추가
-                delegate?.browserDidClose(self)
+                delegate?.browserDidClose()
                 dismiss(animated: true)
             }
         }
         
         @objc private func closeButtonTapped() {
-            self.delegate?.browserDidClose(self)
+            self.delegate?.browserDidClose()
             dismiss(animated: true)
         }
         

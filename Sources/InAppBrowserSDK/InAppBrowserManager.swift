@@ -5,8 +5,14 @@ public class InAppBrowserManager {
     public static let shared = InAppBrowserManager()
     private var config: InAppBrowserConfig?
     private var isInitialized: Bool = false
+    private weak var delegate: InAppBrowserDelegate?
     
     private init() {}
+    
+    // delegate 설정 메소드 추가
+    public func setDelegate(_ delegate: InAppBrowserDelegate) {
+        self.delegate = delegate
+    }
     
     public func initialize(with config: InAppBrowserConfig) {
         if isInitialized {
@@ -22,6 +28,7 @@ public class InAppBrowserManager {
         checkInitialization()
         
         let browserVC = InAppBrowserViewController(config: config!)
+        browserVC.delegate = delegate  // delegate 설정 추가
         browserVC.modalPresentationStyle = .fullScreen
         viewController.present(browserVC, animated: true)
     }
@@ -86,6 +93,9 @@ public class InAppBrowserManager {
             self.config = newConfig
         }
         
+        // 앞에서 config를 설정했으므로 간단히 launch 호출
+        // 중복 웹뷰 생성을 방지하기 위해 직접 웹뷰를 생성하는 코드를 제거하고
+        // 대신 기존 launch 메소드 호출
         launch(from: viewController)
     }
     
