@@ -4,6 +4,7 @@ import GoogleMobileAds
 import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
+    weak var delegate: InAppBrowserDelegate?
     private var webView: WKWebView!
     private var loadingCover: UIView!
     private var loadingIndicator: UIView! // 로딩 인디케이터 (프로그레스바 또는 이미지)
@@ -60,6 +61,18 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         NotificationCenter.default.removeObserver(self)
     }
     
+    public func closeWebView(){
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.delegate?.browserDidClose(self)
+            self.dismiss(animated: true) {
+                // 웹뷰 정리
+                self.webView.stopLoading()
+                self.webView.configuration.userContentController.removeAllUserScripts()
+                self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
+            }
+        }
+    }
     private func setupMainLayout() {
         view.backgroundColor = .white
         
@@ -398,11 +411,15 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             if webView.canGoBack {
                 webView.goBack()
             }else {
+//                dismiss(animated: true)
+                // delegate 호출 추가
+                delegate?.browserDidClose(self)
                 dismiss(animated: true)
             }
         }
         
         @objc private func closeButtonTapped() {
+            self.delegate?.browserDidClose(self)
             dismiss(animated: true)
         }
         
@@ -633,17 +650,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    func closeWebView(){
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.dismiss(animated: true) {
-                // 웹뷰 정리
-                self.webView.stopLoading()
-                self.webView.configuration.userContentController.removeAllUserScripts()
-                self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
-            }
-        }
-    }
     
     // 보상형 전면 광고 표시
     func showRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
