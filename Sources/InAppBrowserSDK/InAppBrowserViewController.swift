@@ -4,7 +4,7 @@ import GoogleMobileAds
 import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
-    weak var delegate: InAppBrowserDelegate?
+    
     private var webView: WKWebView!
     private var loadingCover: UIView!
     private var loadingIndicator: UIView! // 로딩 인디케이터 (프로그레스바 또는 이미지)
@@ -64,7 +64,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     public func closeWebView(){
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.delegate?.browserDidClose()
+            
+            InAppBrowserManager.shared.notifyBrowserClosed()
             self.dismiss(animated: true) {
                 // 웹뷰 정리
                 self.webView.stopLoading()
@@ -413,13 +414,13 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             }else {
 //                dismiss(animated: true)
                 // delegate 호출 추가
-                delegate?.browserDidClose()
+                InAppBrowserManager.shared.notifyBrowserClosed()
                 dismiss(animated: true)
             }
         }
         
         @objc private func closeButtonTapped() {
-            self.delegate?.browserDidClose()
+            InAppBrowserManager.shared.notifyBrowserClosed()
             dismiss(animated: true)
         }
         

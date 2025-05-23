@@ -5,15 +5,13 @@ public class InAppBrowserManager {
     public static let shared = InAppBrowserManager()
     private var config: InAppBrowserConfig?
     private var isInitialized: Bool = false
-    private weak var delegate: InAppBrowserDelegate?
+//    private weak var delegate: InAppBrowserDelegate?
+    private var onBrowserClosed: (() -> Void)?
     
     private init() {}
-    
-    // delegate 설정 메소드 추가
-    public func setDelegate(_ delegate: InAppBrowserDelegate) {
-        self.delegate = delegate
+    public func setOnBrowserClosed(_ callback: @escaping () -> Void) {
+        self.onBrowserClosed = callback
     }
-    
     public func initialize(with config: InAppBrowserConfig) {
         if isInitialized {
             return
@@ -28,7 +26,6 @@ public class InAppBrowserManager {
         checkInitialization()
         
         let browserVC = InAppBrowserViewController(config: config!)
-        browserVC.delegate = delegate  // delegate 설정 추가
         browserVC.modalPresentationStyle = .fullScreen
         viewController.present(browserVC, animated: true)
     }
@@ -98,7 +95,12 @@ public class InAppBrowserManager {
         // 대신 기존 launch 메소드 호출
         launch(from: viewController)
     }
-    
+    internal func notifyBrowserClosed() {
+            
+            if let callback = onBrowserClosed {
+                callback()
+            }
+        }
     private func checkInitialization() {
         guard isInitialized else {
             fatalError("InAppBrowserManager is not initialized. Call initialize() first.")
