@@ -5,21 +5,26 @@ public class InAppBrowserManager {
     public static let shared = InAppBrowserManager()
     private var config: InAppBrowserConfig?
     private var isInitialized: Bool = false
-//    private weak var delegate: InAppBrowserDelegate?
     private var onBrowserClosed: (() -> Void)?
     
     private init() {}
+    
     public func setOnBrowserClosed(_ callback: @escaping () -> Void) {
         self.onBrowserClosed = callback
     }
+    
     public func initialize(with config: InAppBrowserConfig) {
         if isInitialized {
             return
         }
         
         self.config = config
-        MobileAds.shared.start(completionHandler: nil)
-        isInitialized = true
+//    #if DEBUG
+//        MobileAds.shared.requestConfiguration.testDeviceIdentifiers = ["07c278d7984da7563bb2850747920d16"]
+//    #endif
+    
+    MobileAds.shared.start(completionHandler: nil)
+    isInitialized = true
     }
     
     public func launch(from viewController: UIViewController) {
@@ -34,73 +39,91 @@ public class InAppBrowserManager {
         checkInitialization()
         
         if let currentConfig = config {
-            // 현재 설정을 기반으로 새 설정 객체 생성
-            let newConfig = InAppBrowserConfig.Builder()
-                .setToolbarMode(currentConfig.toolbarMode)
-                .setToolbarTitle(currentConfig.toolbarTitle)
-                .setTitleAlignment(currentConfig.titleAlignment)
-                .setUrl(url)
-                .setFullscreen(currentConfig.isFullscreen)
-                .setDebugEnabled(currentConfig.isDebugEnabled)
-                .setUserAgent(currentConfig.userAgent)
-                .build()
-            
-            // UI 커스터마이징 속성 복사
-            if let fontFamily = currentConfig.fontFamily {
-                newConfig.fontFamily = fontFamily
-            }
-            newConfig.fontSize = currentConfig.fontSize
-            newConfig.backButtonLeftMargin = currentConfig.backButtonLeftMargin
-            newConfig.closeButtonRightMargin = currentConfig.closeButtonRightMargin
-            newConfig.toolbarHeight = currentConfig.toolbarHeight
-            newConfig.backButtonIconSize = currentConfig.backButtonIconSize
-            newConfig.closeButtonIconSize = currentConfig.closeButtonIconSize
-            
-            if let bgColor = currentConfig.toolbarBackgroundColor {
-                newConfig.toolbarBackgroundColor = bgColor
+            //  기존 웹뷰가 있다면 완전히 정리
+            if let presentedVC = viewController.presentedViewController as? InAppBrowserViewController {
+                presentedVC.dismiss(animated: false) {
+                    self.launchNewBrowser(from: viewController, url: url, config: currentConfig)
+                }
+                return
             }
             
-            if let titleColor = currentConfig.titleTextColor {
-                newConfig.titleTextColor = titleColor
-            }
-            
-            if let backIconName = currentConfig.backButtonImageName {
-                newConfig.backButtonImageName = backIconName
-            }
-            
-            if let closeIconName = currentConfig.closeButtonImageName {
-                newConfig.closeButtonImageName = closeIconName
-            }
-            
-            // 로딩 커스터마이징 속성 복사
-            if let loadingBgColor = currentConfig.loadingBackgroundColor {
-                newConfig.loadingBackgroundColor = loadingBgColor
-            }
-            
-            if let progressColor = currentConfig.progressBarColor {
-                newConfig.progressBarColor = progressColor
-            }
-            
-            newConfig.progressBarStyle = currentConfig.progressBarStyle
-            
-            if let progressImage = currentConfig.progressBarImageName {
-                newConfig.progressBarImageName = progressImage
-            }
-            
-            self.config = newConfig
+            launchNewBrowser(from: viewController, url: url, config: currentConfig)
         }
-        
-        // 앞에서 config를 설정했으므로 간단히 launch 호출
-        // 중복 웹뷰 생성을 방지하기 위해 직접 웹뷰를 생성하는 코드를 제거하고
-        // 대신 기존 launch 메소드 호출
-        launch(from: viewController)
     }
+
+    private func launchNewBrowser(from viewController: UIViewController, url: String, config: InAppBrowserConfig) {
+        // 새 설정 객체 생성
+        let newConfig = InAppBrowserConfig.Builder()
+            .setToolbarMode(config.toolbarMode)
+            .setToolbarTitle(config.toolbarTitle)
+            .setTitleAlignment(config.titleAlignment)
+            .setUrl(url)
+            .setFullscreen(config.isFullscreen)
+            .setDebugEnabled(config.isDebugEnabled)
+            .setUserAgent(config.userAgent)
+            .setLeftButtonRole(config.leftButtonRole)
+            .setRightButtonRole(config.rightButtonRole)
+            .setLeftButtonVisible(config.leftButtonVisible)
+            .setRightButtonVisible(config.rightButtonVisible)
+            .setLeftButtonIcon(config.leftButtonIcon)
+            .setRightButtonIcon(config.rightButtonIcon)
+            .setBackAction(config.backAction)
+            .setBackConfirmMessage(config.backConfirmMessage)
+            .setBackConfirmTimeout(config.backConfirmTimeout)
+            .setPreventCache(config.preventCache)
+            .build()
+        
+        //  모든 설정 복사
+        copyConfigProperties(from: config, to: newConfig)
+        
+        //  완전히 새로운 브라우저 인스턴스 생성
+        let browserVC = InAppBrowserViewController(config: newConfig)
+        browserVC.modalPresentationStyle = .fullScreen
+        viewController.present(browserVC, animated: true)
+    }
+    
+    //  누락된 copyConfigProperties 함수 추가
+    private func copyConfigProperties(from source: InAppBrowserConfig, to target: InAppBrowserConfig) {
+        // UI 커스터마이징 속성 복사
+        target.fontFamily = source.fontFamily
+        target.fontSize = source.fontSize
+        target.toolbarBackgroundColor = source.toolbarBackgroundColor
+        target.titleTextColor = source.titleTextColor
+        target.backButtonImageName = source.backButtonImageName
+        target.closeButtonImageName = source.closeButtonImageName
+        
+        // 마진 및 크기 설정 복사
+        target.backButtonLeftMargin = source.backButtonLeftMargin
+        target.backButtonTopMargin = source.backButtonTopMargin
+        target.backButtonBottomMargin = source.backButtonBottomMargin
+        target.backButtonRightMargin = source.backButtonRightMargin
+        target.closeButtonRightMargin = source.closeButtonRightMargin
+        target.closeButtonLeftMargin = source.closeButtonLeftMargin
+        target.closeButtonTopMargin = source.closeButtonTopMargin
+        target.closeButtonBottomMargin = source.closeButtonBottomMargin
+        target.toolbarHeight = source.toolbarHeight
+        target.backButtonIconSize = source.backButtonIconSize
+        target.closeButtonIconSize = source.closeButtonIconSize
+        
+        // 제목 마진 설정 복사
+        target.titleLeftMargin = source.titleLeftMargin
+        target.titleRightMargin = source.titleRightMargin
+        target.titleCenterOffset = source.titleCenterOffset
+        
+        // 로딩 커스터마이징 속성 복사
+        target.loadingBackgroundColor = source.loadingBackgroundColor
+        target.progressBarColor = source.progressBarColor
+        target.progressBarStyle = source.progressBarStyle
+        target.progressBarImageName = source.progressBarImageName
+        target.progressBarAnimationDuration = source.progressBarAnimationDuration
+    }
+    
     internal func notifyBrowserClosed() {
-            
-            if let callback = onBrowserClosed {
-                callback()
-            }
+        if let callback = onBrowserClosed {
+            callback()
         }
+    }
+    
     private func checkInitialization() {
         guard isInitialized else {
             fatalError("InAppBrowserManager is not initialized. Call initialize() first.")
@@ -113,5 +136,30 @@ public class InAppBrowserManager {
     
     public func updateConfig(_ newConfig: InAppBrowserConfig) {
         self.config = newConfig
+        
+        //  현재 열려있는 브라우저가 있다면 설정 업데이트
+        DispatchQueue.main.async {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = windowScene.windows.first,
+               let rootVC = window.rootViewController {
+                
+                if let presentedVC = self.findPresentedBrowser(from: rootVC) {
+                    
+                    presentedVC.updateConfiguration(newConfig)
+                } else {
+                }
+            }
+        }
+    }
+    private func findPresentedBrowser(from viewController: UIViewController) -> InAppBrowserViewController? {
+        if let browserVC = viewController as? InAppBrowserViewController {
+            return browserVC
+        }
+        
+        if let presentedVC = viewController.presentedViewController {
+            return findPresentedBrowser(from: presentedVC)
+        }
+        
+        return nil
     }
 }
