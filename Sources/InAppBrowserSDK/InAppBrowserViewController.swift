@@ -7,6 +7,28 @@ import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
+    static func clearAllWebViewCache() {
+        
+        // WKWebsiteDataStore의 모든 데이터 정리
+        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+        }
+        
+        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
+        
+        URLCache.shared.removeAllCachedResponses()
+        
+        let defaults = UserDefaults.standard
+        let webViewKeys = defaults.dictionaryRepresentation().keys.filter { key in
+            key.contains("WebKit") || key.contains("com.apple.WebKit")
+        }
+        
+        for key in webViewKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+            }
+    
     private var webView: WKWebView!
     private var loadingCover: UIView!
     private var loadingIndicator: UIView!
@@ -52,7 +74,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     init(config: InAppBrowserConfig) {
         self.config = config
-        // 백 액션 설정 초기화
         self.currentBackAction = config.backAction
         self.backConfirmMessage = config.backConfirmMessage
         self.backConfirmTimeout = config.backConfirmTimeout
@@ -80,20 +101,14 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         )
     }
     
-    // ✅ 앱이 포그라운드로 돌아올 때 처리
     @objc private func appDidBecomeActive() {
         if webView != nil {
             let script = "window.dispatchEvent(new Event('visibilitychange'));"
             webView.evaluateJavaScript(script, completionHandler: nil)
             
-            // ✅ 외부 앱에서 돌아온 경우 플래그 리셋
             if isMovingToExternalApp {
                 isMovingToExternalApp = false
                 
-                // 1초 후 중복 로드 방지 해제
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.pendingExternalURL = nil
-                }
             }
         }
     }
@@ -101,29 +116,33 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     deinit {
         NotificationCenter.default.removeObserver(self)
         
-        // ✅ 웹뷰 정리
         if let webView = webView {
             webView.stopLoading()
             webView.configuration.userContentController.removeAllUserScripts()
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
+            
+            let dataStore = webView.configuration.websiteDataStore
+            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
         }
         
-        // ✅ 현재 표시중인 Alert 해제
         if let presentedAlert = presentedViewController as? UIAlertController {
             presentedAlert.dismiss(animated: false, completion: nil)
         }
+        
     }
     
     public func closeWebView(){
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // ✅ Alert가 표시중이면 먼저 해제
             if let presentedAlert = self.presentedViewController as? UIAlertController {
                 presentedAlert.dismiss(animated: false, completion: nil)
             }
+            
+            self.clearWebViewData()
             
             InAppBrowserManager.shared.notifyBrowserClosed()
             self.dismiss(animated: true) { [weak self] in
@@ -132,10 +151,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 self.webView.stopLoading()
                 self.webView.configuration.userContentController.removeAllUserScripts()
                 
-                // ✅ 안전하게 handler 제거
                 do {
                     self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
-                } catch {
                 }
                 
                 self.webView.navigationDelegate = nil
@@ -144,15 +161,82 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
     
-    // URL 최적화 함수 (쿠팡 URL 문제 해결)
+    private func clearWebViewData() {
+        // 웹뷰 로딩 중지
+        webView.stopLoading()
+        
+        // 캐시와 쿠키 정리
+        let dataStore = webView.configuration.websiteDataStore
+        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+        
+        dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+        }
+        
+        // HTTP 쿠키 정리
+        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
+        
+        // URL 캐시 정리
+        URLCache.shared.removeAllCachedResponses()
+        
+        // 네비게이션 히스토리 초기화
+        navigationHistory.removeAll()
+        isNavigatingBack = false
+        
+        // 백 액션 관련 변수 초기화
+        backActionCount = 0
+        lastBackActionURL = ""
+        lastBackActionTime = 0
+        
+    }
+    private func applyImageControlSettings() {
+        let imageControlScript = """
+        (function() {
+            const allowSave = \(config.allowImageSave ? "true" : "false");
+            const allowZoom = \(config.allowImageZoom ? "true" : "false");
+            const allowDrag = \(config.allowImageDrag ? "true" : "false");
+            const allowSelect = \(config.allowImageSelect ? "true" : "false");
+            
+            
+            const images = document.querySelectorAll('img');
+            images.forEach(function(img) {
+                if (!allowSave) {
+                    img.style.webkitTouchCallout = 'none';
+                    img.addEventListener('contextmenu', function(e) {
+                        e.preventDefault();
+                    }, true);
+                }
+                
+                if (!allowDrag) {
+                    img.style.webkitUserDrag = 'none';
+                    img.draggable = false;
+                }
+                
+                if (!allowSelect) {
+                    img.style.webkitUserSelect = 'none';
+                    img.style.userSelect = 'none';
+                }
+            });
+            
+            if (!allowZoom) {
+                document.addEventListener('gesturestart', function(e) {
+                    e.preventDefault();
+                }, false);
+                
+                document.addEventListener('gesturechange', function(e) {
+                    e.preventDefault();
+                }, false);
+            }
+        })();
+        """
+        
+        webView.evaluateJavaScript(imageControlScript, completionHandler: nil)
+    }
     private func optimizeURL(_ urlString: String) -> String {
         guard let url = URL(string: urlString) else { return urlString }
         
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         
-        // 쿠팡 특화 최적화
         if url.host?.contains("coupang.com") == true {
-            // 필수 파라미터만 유지
             let essentialParams = ["itemId", "vendorItemId"]
             
             if let queryItems = components?.queryItems {
@@ -163,10 +247,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             }
         }
         
-        // URL 길이 체크 및 단축
         let optimizedURL = components?.url?.absoluteString ?? urlString
         
-        // 2000자 이상이면 기본 상품 페이지로 리다이렉트
         if optimizedURL.count > 2000 {
             if let productId = extractProductId(from: urlString) {
                 return "https://www.coupang.com/vp/products/\(productId)"
@@ -176,7 +258,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         return optimizedURL
     }
     
-    // 상품 ID 추출
     private func extractProductId(from urlString: String) -> String? {
         if let url = URL(string: urlString) {
             let pathComponents = url.pathComponents
@@ -190,12 +271,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     private func setupMainLayout() {
         view.backgroundColor = .white
-        
-        // Setup toolbar
         let toolbar = createToolbar()
         view.addSubview(toolbar)
         
-        // Setup WebView with enhanced configuration
         let config = createEnhancedWebViewConfiguration()
         
         webView = WKWebView(frame: .zero, configuration: config)
@@ -203,7 +281,29 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         webView.uiDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         
-        // iOS 16.4+ 디버깅 지원 추가
+        webView.scrollView.maximumZoomScale = 1.0
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.bouncesZoom = false
+        webView.scrollView.showsVerticalScrollIndicator = false
+        webView.scrollView.showsHorizontalScrollIndicator = false
+        
+        webView.scrollView.panGestureRecognizer.maximumNumberOfTouches = 1
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        
+        for gestureRecognizer in webView.gestureRecognizers ?? [] {
+            if gestureRecognizer is UITapGestureRecognizer {
+                gestureRecognizer.isEnabled = true // 탭은 허용 (링크 클릭 등)
+            } else if gestureRecognizer is UIPinchGestureRecognizer {
+                gestureRecognizer.isEnabled = false // 핀치 줌 완전 차단
+            } else if gestureRecognizer is UILongPressGestureRecognizer {
+                gestureRecognizer.isEnabled = false // 길게 누르기 차단
+            }
+        }
+        
+        if #available(iOS 13.0, *) {
+            webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
+        }
+        
         if #available(iOS 16.4, *) {
             webView.isInspectable = true
         }
@@ -211,7 +311,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         view.addSubview(webView)
         MobileAds.shared.register(webView)
         
-        // Setup loading cover
         setupLoadingCover()
         
         NSLayoutConstraint.activate([
@@ -226,13 +325,10 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
-    
-    // 향상된 WebView 설정
     private func createEnhancedWebViewConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         let userContentController = WKUserContentController()
         
-        // 쿠키 설정
         let cookieStorage = HTTPCookieStorage.shared
         cookieStorage.cookieAcceptPolicy = .always
         
@@ -241,25 +337,208 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         config.allowsInlineMediaPlayback = true
         
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.suppressesIncrementalRendering = false
         
-        // iOS 버전별 설정
         if #available(iOS 14.0, *) {
             config.mediaTypesRequiringUserActionForPlayback = []
             
             let preferences = WKWebpagePreferences()
             preferences.allowsContentJavaScript = true
+            if #available(iOS 14.5, *) {
+                preferences.preferredContentMode = .recommended
+            }
             config.defaultWebpagePreferences = preferences
         } else {
             config.mediaPlaybackRequiresUserAction = false
             config.preferences.javaScriptEnabled = true
         }
         
+        let imageControlScript = """
+        (function() {
+            
+            // 1. 이미지 컨텍스트 메뉴 비활성화 (길게 누르기 방지)
+            document.addEventListener('contextmenu', function(e) {
+                if (e.target.tagName === 'IMG') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                }
+            }, true);
+            
+            // 2. 이미지 드래그 방지
+            document.addEventListener('dragstart', function(e) {
+                if (e.target.tagName === 'IMG') {
+                    e.preventDefault();
+                    return false;
+                }
+            }, true);
+            
+            // 3. 이미지 선택 방지
+            document.addEventListener('selectstart', function(e) {
+                if (e.target.tagName === 'IMG') {
+                    e.preventDefault();
+                    return false;
+                }
+            }, true);
+            
+            // 4. 모든 이미지에 터치 이벤트 제어 적용
+            function disableImageInteractions() {
+                const images = document.querySelectorAll('img');
+                
+                images.forEach(function(img, index) {
+                    if (img.dataset.protected) return; 
+                    
+                    img.dataset.protected = 'true';
+                    
+                    // CSS 스타일 강제 적용
+                    img.style.webkitUserSelect = 'none';
+                    img.style.userSelect = 'none';
+                    img.style.webkitTouchCallout = 'none';
+                    img.style.webkitUserDrag = 'none';
+                    img.style.pointerEvents = 'none';
+                    
+                    // 터치 이벤트 차단
+                    img.addEventListener('touchstart', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, { passive: false, capture: true });
+                    
+                    img.addEventListener('touchend', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, { passive: false, capture: true });
+                    
+                    img.addEventListener('touchmove', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, { passive: false, capture: true });
+                    
+                    // 클릭 이벤트 차단
+                    img.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, true);
+                    
+                    // 더블클릭 차단 (줌 방지)
+                    img.addEventListener('dblclick', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, true);
+                    
+                    // 마우스 이벤트 차단
+                    img.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, true);
+                    
+                    img.addEventListener('mouseup', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, true);
+                });
+            }
+            
+            // 5. CSS 스타일로 추가 보호
+            const style = document.createElement('style');
+            style.innerHTML = \'
+                img {
+                    -webkit-user-select: none !important;
+                    -moz-user-select: none !important;
+                    -ms-user-select: none !important;
+                    user-select: none !important;
+                    -webkit-user-drag: none !important;
+                    -webkit-touch-callout: none !important;
+                    -webkit-tap-highlight-color: transparent !important;
+                    pointer-events: none !important;
+                    touch-action: none !important;
+                }
+                
+                /* 이미지 컨테이너도 보호 */
+                .image-container, .photo-container, .img-container {
+                    -webkit-user-select: none !important;
+                    user-select: none !important;
+                    -webkit-touch-callout: none !important;
+                }
+                
+                /* 특정 클래스 이미지들 추가 보호 */
+                img[src*=".jpg"], 
+                img[src*=".jpeg"], 
+                img[src*=".png"], 
+                img[src*=".gif"], 
+                img[src*=".webp"] {
+                    -webkit-user-select: none !important;
+                    user-select: none !important;
+                    -webkit-touch-callout: none !important;
+                    pointer-events: none !important;
+                    -webkit-user-drag: none !important;
+                }
+            \';
+            document.head.appendChild(style);
+            
+            // 6. 초기 실행 및 DOM 변경 감지
+            function initImageProtection() {
+                disableImageInteractions();
+                
+                // DOM 변경 감지하여 새로운 이미지들에도 적용
+                const observer = new MutationObserver(function(mutations) {
+                    let hasNewImages = false;
+                    
+                    mutations.forEach(function(mutation) {
+                        if (mutation.type === 'childList') {
+                            mutation.addedNodes.forEach(function(node) {
+                                if (node.nodeType === 1) { // Element node
+                                    if (node.tagName === 'IMG' || node.querySelector && node.querySelector('img')) {
+                                        hasNewImages = true;
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    
+                    if (hasNewImages) {
+                        setTimeout(disableImageInteractions, 100);
+                    }
+                });
+                
+                if (document.body) {
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+            }
+            
+            // 7. 실행
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initImageProtection);
+            } else {
+                initImageProtection();
+            }
+            
+            window.addEventListener('load', function() {
+                setTimeout(disableImageInteractions, 500);
+            });
+            
+        })();
+        """
         
-        // 데이터 저장소 설정
-        let dataStore = WKWebsiteDataStore.default()
-        config.websiteDataStore = dataStore
+        let imageScript = WKUserScript(
+            source: imageControlScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(imageScript)
         
-        // 카카오톡 공유를 위한 URL 스킴 처리 추가
+        if self.config.preventCache {
+            let dataStore = WKWebsiteDataStore.nonPersistent()
+            config.websiteDataStore = dataStore
+        } else {
+            let dataStore = WKWebsiteDataStore.default()
+            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
+            config.websiteDataStore = dataStore
+        }
+        
         config.applicationNameForUserAgent = "KakaoTalkSharing"
         
         return config
@@ -268,7 +547,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         let toolbar = UIView()
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         
-        // 툴바 배경색 설정
         if let bgColor = config.toolbarBackgroundColor {
             toolbar.backgroundColor = bgColor
         } else {
@@ -278,28 +556,24 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         // 왼쪽 버튼 (leftButtonRole에 따라)
         let leftButton = UIButton(type: .system)
         leftButton.translatesAutoresizingMaskIntoConstraints = false
-        leftButton.tag = 100 // ✅ 왼쪽 버튼 태그
+        leftButton.tag = 100
         setupButton(leftButton, role: config.leftButtonRole, icon: config.leftButtonIcon, isLeft: true)
         
-        // 오른쪽 버튼 (rightButtonRole에 따라)
         let rightButton = UIButton(type: .system)
         rightButton.translatesAutoresizingMaskIntoConstraints = false
-        rightButton.tag = 200 // ✅ 오른쪽 버튼 태그
+        rightButton.tag = 200
         setupButton(rightButton, role: config.rightButtonRole, icon: config.rightButtonIcon, isLeft: false)
         
-        // 제목 레이블
         let titleLabel = UILabel()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.text = config.toolbarTitle
         
-        // 폰트 설정
         if let fontFamily = config.fontFamily {
             titleLabel.font = UIFont(name: fontFamily, size: CGFloat(config.fontSize))
         } else {
             titleLabel.font = .systemFont(ofSize: CGFloat(config.fontSize), weight: .semibold)
         }
         
-        // 제목 색상 설정
         if let titleColor = config.titleTextColor {
             titleLabel.textColor = titleColor
         } else {
@@ -310,11 +584,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         toolbar.addSubview(rightButton)
         toolbar.addSubview(titleLabel)
         
-        // 버튼 크기 상수
         let leftButtonSize = CGFloat(config.backButtonIconSize)
         let rightButtonSize = CGFloat(config.closeButtonIconSize)
         
-        // === 왼쪽 버튼 마진 계산 ===
         let leftButtonLeftMargin = config.leftButtonVisible ?
             CGFloat(config.backButtonLeftMargin == -1 ? 8 : config.backButtonLeftMargin) : 0
         
@@ -327,7 +599,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         let leftButtonBottomMargin = config.leftButtonVisible ?
             CGFloat(config.backButtonBottomMargin == -1 ? 0 : config.backButtonBottomMargin) : 0
             
-        // === 오른쪽 버튼 마진 계산 ===
         let rightButtonLeftMargin = config.rightButtonVisible ?
             CGFloat(config.closeButtonLeftMargin == -1 ? 0 : config.closeButtonLeftMargin) : 0
             
@@ -340,11 +611,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         let rightButtonBottomMargin = config.rightButtonVisible ?
             CGFloat(config.closeButtonBottomMargin == -1 ? 0 : config.closeButtonBottomMargin) : 0
         
-        // 버튼 제약 조건 설정
         var leftButtonConstraints: [NSLayoutConstraint] = []
         var rightButtonConstraints: [NSLayoutConstraint] = []
         
-        // === 왼쪽 버튼 제약 조건 ===
         if config.leftButtonVisible {
             leftButtonConstraints = [
                 leftButton.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: leftButtonLeftMargin),
@@ -352,30 +621,25 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 leftButton.heightAnchor.constraint(equalToConstant: leftButtonSize)
             ]
             
-            // 상하 마진이 모두 설정된 경우
             if config.backButtonTopMargin != -1 && config.backButtonBottomMargin != -1 {
                 leftButtonConstraints.append(
                     leftButton.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: leftButtonTopMargin)
                 )
             } else if config.backButtonTopMargin != -1 {
-                // Top 마진만 설정된 경우
                 leftButtonConstraints.append(
                     leftButton.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: leftButtonTopMargin)
                 )
             } else if config.backButtonBottomMargin != -1 {
-                // Bottom 마진만 설정된 경우
                 leftButtonConstraints.append(
                     leftButton.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -leftButtonBottomMargin)
                 )
             } else {
-                // 기본: 수직 중앙 정렬
                 leftButtonConstraints.append(
                     leftButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor)
                 )
             }
         }
         
-        // === 오른쪽 버튼 제약 조건 ===
         if config.rightButtonVisible {
             rightButtonConstraints = [
                 rightButton.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: rightButtonRightMargin),
@@ -383,33 +647,27 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 rightButton.heightAnchor.constraint(equalToConstant: rightButtonSize)
             ]
             
-            // 상하 마진이 모두 설정된 경우
             if config.closeButtonTopMargin != -1 && config.closeButtonBottomMargin != -1 {
                 rightButtonConstraints.append(
                     rightButton.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: rightButtonTopMargin)
                 )
             } else if config.closeButtonTopMargin != -1 {
-                // Top 마진만 설정된 경우
                 rightButtonConstraints.append(
                     rightButton.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: rightButtonTopMargin)
                 )
             } else if config.closeButtonBottomMargin != -1 {
-                // Bottom 마진만 설정된 경우
                 rightButtonConstraints.append(
                     rightButton.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -rightButtonBottomMargin)
                 )
             } else {
-                // 기본: 수직 중앙 정렬
                 rightButtonConstraints.append(
                     rightButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor)
                 )
             }
         }
         
-        // 제약 조건 활성화
         NSLayoutConstraint.activate(leftButtonConstraints + rightButtonConstraints)
         
-        // 제목 정렬에 따른 제약 조건 설정
         switch config.titleAlignment {
         case "left":
             let leftMargin = calculateTitleLeftMargin()
@@ -421,7 +679,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             titleLabel.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: CGFloat(-rightMargin)).isActive = true
             titleLabel.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor).isActive = true
             
-        default: // center
+        default:
             titleLabel.centerXAnchor.constraint(equalTo: toolbar.centerXAnchor, constant: CGFloat(config.titleCenterOffset)).isActive = true
             titleLabel.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor).isActive = true
         }
@@ -429,58 +687,49 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         return toolbar
     }
 
-    // 타이틀 왼쪽 마진 계산 함수 수정
     private func calculateTitleLeftMargin() -> Int {
         if let customMargin = config.titleLeftMargin, customMargin != -1 {
             return customMargin
         }
         
-        // 자동 계산: 왼쪽 버튼 영역 고려
-        var leftMargin = 16 // 기본 마진
+        var leftMargin = 16
         
         if config.leftButtonVisible && config.leftButtonRole != .none {
             let buttonLeftMargin = config.backButtonLeftMargin == -1 ? 8 : config.backButtonLeftMargin
             let buttonRightMargin = config.backButtonRightMargin == -1 ? 0 : config.backButtonRightMargin
             let buttonSize = config.backButtonIconSize
             
-            // 왼쪽 버튼의 실제 오른쪽 끝 위치 계산
             let buttonRightEdge = buttonLeftMargin + buttonSize + buttonRightMargin
-            leftMargin = buttonRightEdge + 8 // 버튼 오른쪽 끝 + 간격(8dp)
+            leftMargin = buttonRightEdge + 8
         }
         
         return leftMargin
     }
 
-    // 타이틀 오른쪽 마진 계산 함수 수정
     private func calculateTitleRightMargin() -> Int {
         if let customMargin = config.titleRightMargin, customMargin != -1 {
             return customMargin
         }
         
-        // 자동 계산: 오른쪽 버튼 영역 고려
-        var rightMargin = 16 // 기본 마진
+        var rightMargin = 16
         
         if config.rightButtonVisible && config.rightButtonRole != .none {
             let buttonRightMargin = config.closeButtonRightMargin == -1 ? 8 : config.closeButtonRightMargin
             let buttonLeftMargin = config.closeButtonLeftMargin == -1 ? 0 : config.closeButtonLeftMargin
             let buttonSize = config.closeButtonIconSize
             
-            // 오른쪽 버튼의 실제 왼쪽 끝까지의 거리 계산
             let buttonLeftEdge = buttonRightMargin + buttonSize + buttonLeftMargin
-            rightMargin = buttonLeftEdge + 8 // 버튼 왼쪽 끝 + 간격(8dp)
+            rightMargin = buttonLeftEdge + 8
         }
         
         return rightMargin
     }
     
-    // 버튼 설정 함수
-    // 버튼 설정 함수에 디버깅 추가
     private func setupButton(_ button: UIButton, role: InAppBrowserConfig.ButtonRole, icon: InAppBrowserConfig.ButtonIcon, isLeft: Bool) {
         
         
         button.removeTarget(nil, action: nil, for: .allEvents)
         
-        // 1. 버튼 기능 설정
         switch role {
         case .back:
             button.addTarget(self, action: #selector(performBackAction), for: .touchUpInside)
@@ -495,10 +744,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             return
         }
         
-        // 2. 버튼 아이콘 설정
         setupButtonIcon(button, icon: icon, role: role)
         
-        // 3. 버튼 가시성 설정
         if isLeft && !config.leftButtonVisible {
             button.isHidden = true
         } else if !isLeft && !config.rightButtonVisible {
@@ -513,7 +760,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
         switch icon {
         case .auto:
-            // 역할에 따라 자동 아이콘
             if role == .back {
                 button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
             } else {
@@ -522,30 +768,37 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .back:
-            // 항상 뒤로가기 화살표
             button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .close:
-            // 항상 X 아이콘
             button.setImage(UIImage(systemName: "xmark"), for: .normal)
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .custom(let imageName):
-            // 커스텀 이미지
             if let customImage = UIImage(named: imageName) {
                 button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
             } else {
-                // 폴백: 역할에 따라 기본 아이콘
                 setupButtonIcon(button, icon: .auto, role: role)
             }
         }
     }
     
     private func setupWebView() {
+        if webView.url != nil {
+            webView.stopLoading()
+            
+            // 기존 데이터 정리
+            let dataStore = webView.configuration.websiteDataStore
+            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+            }
+        }
+        
         if let urlString = config.url {
             let finalUrl = config.preventCache ? addCacheBusterToUrl(urlString) : urlString
             let optimizedUrlString = optimizeURL(finalUrl)
+            
             
             if let url = URL(string: optimizedUrlString) {
                 // 캐시 방지 설정
@@ -556,12 +809,12 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 
                 var request = URLRequest(url: url)
                 
-                // 캐시 방지 헤더 추가
                 if config.preventCache {
                     request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
                     request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
                     request.setValue("no-cache", forHTTPHeaderField: "Pragma")
                     request.setValue("0", forHTTPHeaderField: "Expires")
+                    request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
                 }
                 
                 request.httpShouldHandleCookies = true
@@ -574,7 +827,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
 
-    // 캐시 버스터 추가 메서드
     private func addCacheBusterToUrl(_ urlString: String) -> String {
         guard let url = URL(string: urlString) else { return urlString }
         
@@ -591,7 +843,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         return components?.url?.absoluteString ?? urlString
     }
     
-    // 최적 User-Agent 생성
     private func generateOptimalUserAgent(for url: URL) -> String {
         let baseUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         
@@ -633,7 +884,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
         
         switch config.progressBarStyle {
-        case 1: // 수평 프로그레스바
+        case 1:
             let progressView = UIProgressView(progressViewStyle: .default)
             progressView.translatesAutoresizingMaskIntoConstraints = false
             
@@ -674,7 +925,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             
             loadingIndicator = progressView
             
-        case 2: // 사용자 정의 애니메이션 이미지
+        case 2:
             if let baseImageName = config.progressBarImageName {
                 var animationImages: [UIImage] = []
                 
@@ -727,7 +978,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 fallbackToDefaultIndicator()
             }
             
-        default: // 기본 원형 인디케이터
+        default:
             fallbackToDefaultIndicator()
         }
     }
@@ -768,13 +1019,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         hideLoadingCover()
         
-        // ✅ 네비게이션 완료 후 상태 확인
-        
-        
-        
-        
-        
-        // ✅ 히스토리 추적
         if let currentURL = webView.url?.absoluteString {
             if !isNavigatingBack {
                 if navigationHistory.last != currentURL {
@@ -792,22 +1036,13 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
         isNavigatingBack = false
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.checkInitialATTStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.sendInitialATTStatusOnce()
         }
     }
-    // 백 액션 처리 함수 추가
     private func handleBackAction() {
             let currentTime = Date().timeIntervalSince1970
             let currentURL = webView.url?.absoluteString ?? ""
-            
-            
-            
-            
-            
-            
-            
-            // ✅ 같은 URL에서 5초 내에 3번 이상 뒤로가기 시도하면 강제 종료
             if currentURL == lastBackActionURL && currentTime - lastBackActionTime < 5.0 {
                 backActionCount += 1
                 
@@ -817,7 +1052,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                     return
                 }
             } else {
-                // 다른 URL이거나 시간이 지났으면 카운트 리셋
                 backActionCount = 1
             }
             
@@ -830,16 +1064,10 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 closeApp()
                 
             case .historyBack:
-                
-                
-                // ✅ 특정 페이지에서는 바로 종료 (success, error 페이지 등)
                 if shouldForceExitFromCurrentPage(currentURL) {
-                    
                     closeApp()
                     return
                 }
-                
-                // ✅ BackList 검사 - 다른 URL이 있는지 확인
                 let hasValidBackHistory = checkValidBackHistory()
                 
                 if hasValidBackHistory {
@@ -847,7 +1075,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                     isNavigatingBack = true
                     webView.goBack()
                     
-                    // ✅ 3초 후에도 같은 URL이면 강제 종료
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                         self.checkBackNavigationResult(originalURL: currentURL)
                     }
@@ -856,15 +1083,51 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                     closeApp()
                 }
                 
-            case .confirmExit, .ignore:
-                
-                closeApp()
+            case .confirmExit:
+                handleConfirmExitWithDoubleTap()
+                    
+            case .ignore:
+                return
             }
             
             
         }
+    private func showExitConfirmDialog() {
+        if isShowingAlert {
+            return
+        }
         
-        // ✅ 특정 페이지에서 강제 종료해야 하는지 확인
+        let alert = UIAlertController(
+            title: "앱 종료",
+            message: backConfirmMessage,
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
+            
+        })
+        
+        alert.addAction(UIAlertAction(title: "확인", style: .destructive) { [weak self] _ in
+            
+            self?.closeApp()
+        })
+        
+        present(alert, animated: true)
+    }
+
+    // 추가: 더블 탭 확인 방식을 원한다면 이 메서드도 사용 가능
+    private func handleConfirmExitWithDoubleTap() {
+        let currentTime = Date().timeIntervalSince1970
+        
+        if currentTime - lastBackPressed < backConfirmTimeout {
+            // 지정된 시간 내에 두 번째 탭 - 앱 종료
+            closeApp()
+        } else {
+            // 첫 번째 탭 - 토스트 메시지 표시
+            lastBackPressed = currentTime
+            showToast(message: backConfirmMessage, duration: backConfirmTimeout)
+        }
+    }
         private func shouldForceExitFromCurrentPage(_ currentURL: String) -> Bool {
             let forceExitPatterns = [
                 "/success",
@@ -885,16 +1148,10 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             return false
         }
         
-        // ✅ 유효한 뒤로가기 히스토리가 있는지 확인
         private func checkValidBackHistory() -> Bool {
             let currentURL = webView.url?.absoluteString ?? ""
             let backList = webView.backForwardList.backList
             
-            
-            
-            
-            
-            // BackList에 현재 URL과 다른 URL이 있는지 확인
             for (index, item) in backList.enumerated() {
                 let backURL = item.url.absoluteString
                 
@@ -909,7 +1166,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             return false
         }
         
-        // ✅ 뒤로가기 실행 후 결과 확인
         private func checkBackNavigationResult(originalURL: String) {
             let currentURL = webView.url?.absoluteString ?? ""
             
@@ -920,25 +1176,17 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 closeApp()
             } else {
                 
-                // 성공하면 카운트 리셋
                 backActionCount = 0
             }
         }
-        
-        // ✅ 뒤로가기 루프 감지 시 바로 종료
         private func showBackLoopAlert() {
             
             closeApp()
         }
         
-        // ✅ 홈 페이지로 이동 (사용하지 않으므로 제거)
-        // private func goToHomePage() { ... }
-        
-        // ✅ 앱 종료 함수 개선
         private func closeApp() {
             
             
-            // 카운트 리셋
             backActionCount = 0
             lastBackActionURL = ""
             
@@ -951,7 +1199,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             }
         }
 
-    // 토스트 메시지 표시 함수 (iOS용)
     private func showToast(message: String, duration: TimeInterval = 2.0) {
         let toastLabel = UILabel()
         toastLabel.backgroundColor = UIColor.black.withAlphaComponent(0.8)
@@ -1004,52 +1251,38 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
 }
 extension InAppBrowserViewController {
     
-    // ✅ 버튼을 아예 새로 만들어서 교체하는 방법
     func updateButtonRoles(leftRole: InAppBrowserConfig.ButtonRole, rightRole: InAppBrowserConfig.ButtonRole, leftIcon: InAppBrowserConfig.ButtonIcon, rightIcon: InAppBrowserConfig.ButtonIcon) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            
-            
-            // ✅ 기존 버튼들을 완전히 교체
             self.replaceButton(tag: 100, role: leftRole, icon: leftIcon, isLeft: true)
             self.replaceButton(tag: 200, role: rightRole, icon: rightIcon, isLeft: false)
         }
     }
     
-    // ✅ 버튼을 완전히 새로 만들어서 교체
     private func replaceButton(tag: Int, role: InAppBrowserConfig.ButtonRole, icon: InAppBrowserConfig.ButtonIcon, isLeft: Bool) {
-        // 기존 버튼 찾기
         guard let oldButton = self.view.viewWithTag(tag) as? UIButton,
               let toolbar = oldButton.superview else {
             
             return
         }
         
-        
-        
-        // 기존 버튼의 제약조건들 저장
         let constraints = oldButton.constraints
         let superviewConstraints = toolbar.constraints.filter { constraint in
             constraint.firstItem === oldButton || constraint.secondItem === oldButton
         }
         
-        // 기존 버튼 제거
         oldButton.removeFromSuperview()
         
         
-        // 새 버튼 생성
         let newButton = UIButton(type: .system)
         newButton.translatesAutoresizingMaskIntoConstraints = false
         newButton.tag = tag
         
-        // 새 버튼 설정
         setupButton(newButton, role: role, icon: icon, isLeft: isLeft)
         
-        // 툴바에 추가
         toolbar.addSubview(newButton)
         
-        // 제약조건 복원
         for constraint in superviewConstraints {
             let newConstraint: NSLayoutConstraint
             
@@ -1085,7 +1318,6 @@ extension InAppBrowserViewController {
 // MARK: - WKNavigationDelegate
 extension InAppBrowserViewController: WKNavigationDelegate {
 
-    // InAppBrowserViewController.swift - 네비게이션 타이밍 로직 수정
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
@@ -1096,14 +1328,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         let currentTime = Date().timeIntervalSince1970
         
         
-        
-        
-        
-        
-        
-        
-        
-        // ✅ 뒤로가기/앞으로가기 감지
         if navigationAction.navigationType == .backForward {
             isNavigatingBack = true
             
@@ -1111,14 +1335,12 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 너무 빠른 연속 네비게이션 방지 조건 개선
         let timeSinceLastNavigation = currentTime - lastNavigationTime
         let isInitialLoad = webView.url == nil || webView.url?.absoluteString == "about:blank"
         let isReload = navigationAction.navigationType == .reload
         let isFormSubmission = navigationAction.navigationType == .formSubmitted
         let isOther = navigationAction.navigationType == .other
         
-        // ✅ 차단하지 않을 조건들
         let shouldNotBlock = isInitialLoad ||
                             isNavigatingBack ||
                             isReload ||
@@ -1132,14 +1354,12 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 첫 로드나 특별한 경우가 아닐 때만 시간 업데이트
         if !isInitialLoad && !isNavigatingBack {
             lastNavigationTime = currentTime
         }
         
         isNavigatingBack = false
         
-        // ✅ 외부 앱에서 돌아온 직후의 중복 로드 방지
         if currentTime - lastExternalAppTime < 2.0 && urlString == pendingExternalURL {
             
             decisionHandler(.cancel)
@@ -1147,14 +1367,12 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ JavaScript나 about: 스킴은 항상 허용
         if urlString.hasPrefix("about:") || urlString.hasPrefix("javascript:") || urlString.hasPrefix("data:") {
             
             decisionHandler(.allow)
             return
         }
         
-        // ✅ 쿠팡 앱 스킴 처리
         if url.scheme == "coupang" || urlString.contains("coupang://") {
             
             handleExternalApp(url: url, appName: "쿠팡", appStoreURL: "https://apps.apple.com/app/id454434967")
@@ -1162,7 +1380,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 카카오톡 스킴 처리
         if url.scheme == "kakaolink" || url.scheme == "kakaotalk" || urlString.contains("kakaolink://") || urlString.contains("kakaotalk://") {
             
             handleExternalApp(url: url, appName: "카카오톡", appStoreURL: "https://apps.apple.com/app/id362057947")
@@ -1170,7 +1387,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ App Store 링크 처리
         if urlString.contains("apps.apple.com") || urlString.contains("itunes.apple.com") {
             
             isMovingToExternalApp = true
@@ -1180,7 +1396,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 기타 커스텀 스킴 처리
         if let scheme = url.scheme, !["http", "https", "about", "data", "javascript"].contains(scheme) {
             
             handleExternalApp(url: url, appName: scheme, appStoreURL: nil)
@@ -1188,18 +1403,15 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 도메인 비교
         let currentHost = webView.url?.host?.lowercased()
         let newHost = url.host?.lowercased()
         
-        // 현재 URL이 없는 경우 (첫 로드) 허용
         if currentHost == nil {
             
             decisionHandler(.allow)
             return
         }
         
-        // ✅ 같은 도메인 또는 서브도메인 체크
         let isSameDomain = checkSameDomain(currentHost: currentHost, newHost: newHost)
         
         if isSameDomain {
@@ -1208,7 +1420,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ iframe 내 광고 로드는 허용
         let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
         if !isMainFrame {
             
@@ -1216,7 +1427,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 광고 도메인 처리
         let adDomains = [
             "googleads.g.doubleclick.net",
             "googlesyndication.com",
@@ -1235,7 +1445,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             urlString.contains(domain)
         }
         
-        // ✅ 광고 클릭 처리 (링크 활성화인 경우에만)
         if navigationAction.navigationType == .linkActivated && isAdDomain {
             
             
@@ -1251,7 +1460,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 일반 외부 도메인 링크 클릭 처리
         if navigationAction.navigationType == .linkActivated {
             
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
@@ -1259,12 +1467,10 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        // ✅ 기타 모든 네비게이션 허용
         decisionHandler(.allow)
     }
 
 
-    // ✅ 도메인 비교 함수 추가
     private func checkSameDomain(currentHost: String?, newHost: String?) -> Bool {
         guard let current = currentHost, let new = newHost else {
             return false
@@ -1308,7 +1514,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             }
         }
         
-        // ✅ 앱 설치 안내 통합 함수
         private func showAppInstallAlert(appName: String, appStoreURL: String) {
             let alert = UIAlertController(
                 title: "\(appName) 앱이 필요합니다",
@@ -1332,7 +1537,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         let coupangAppStoreURL = URL(string: "https://apps.apple.com/app/id454434967")!
         UIApplication.shared.open(coupangAppStoreURL, options: [:], completionHandler: nil)
     }
-    // 카카오톡 앱스토어 열기 함수 추가
     private func openKakaoAppStore() {
         let kakaoAppStoreURL = URL(string: "https://apps.apple.com/app/id362057947")!
         UIApplication.shared.open(kakaoAppStoreURL, options: [:], completionHandler: nil)
@@ -1347,112 +1551,101 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         hideLoadingCover()
         
         
-        // 뒤로가기 중 실패한 경우 처리
         if isNavigatingBack {
             
             isNavigatingBack = false
             closeApp()
         }
     }
-    // webView didFinish에서 호출할 함수
     private func checkInitialATTStatus() {
-        if #available(iOS 14.5, *) {
-            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
-            
-            switch currentStatus {
-            case .authorized:
+        sendInitialATTStatus()
+    }
+    private func sendInitialATTStatus() {
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if #available(iOS 14.5, *) {
+                let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+                
+                self.notifyWebWithATTStatusAndAdId(status: currentStatus)
+            } else {
                 let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-                notifyWebWithAdId(adId)
                 
-            case .denied, .restricted:
-                notifyWebWithAdId("")
-                
-            case .notDetermined:
-                ATTrackingManager.requestTrackingAuthorization { status in
-                    DispatchQueue.main.async {
-                        let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-                        self.notifyWebWithAdId(adId)
-                    }
-                }
-                
-            @unknown default:
-                notifyWebWithAdId("")
+                self.notifyWebWithATTStatusAndAdId(adId: adId, statusString: "authorized", statusCode: 3)
             }
-        } else {
-            // iOS 14.5 이전 버전에서는 바로 광고 ID 제공
-            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-            notifyWebWithAdId(adId)
         }
     }
     
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            
-            guard let url = navigationAction.request.url else {
-                return nil
-            }
-            
-            let urlString = url.absoluteString
-            
-            
-            // ✅ 같은 도메인 새 창은 현재 WebView에서 로드 (히스토리 유지)
-            let currentHost = webView.url?.host?.lowercased()
-            let newHost = url.host?.lowercased()
-            
-            if checkSameDomain(currentHost: currentHost, newHost: newHost) {
-                
-                
-                // ✅ 새 창 요청도 히스토리에 기록
-                if !navigationHistory.contains(urlString) {
-                    navigationHistory.append(urlString)
-                }
-                
+        
+        guard let url = navigationAction.request.url else {
+            return nil
+        }
+        
+        let urlString = url.absoluteString
+        let isWindowOpen = navigationAction.navigationType == .other
+       
+        
+        let currentHost = webView.url?.host?.lowercased()
+        let newHost = url.host?.lowercased()
+        
+        
+        let isJavaScriptLink = urlString.hasPrefix("javascript:") || urlString.hasPrefix("about:")
+        
+        if isJavaScriptLink {
+            DispatchQueue.main.async {
                 webView.load(URLRequest(url: url))
-                return nil
-            }
-            
-            // ✅ 외부 도메인은 외부 브라우저에서 열기
-            
-            isMovingToExternalApp = true
-            lastExternalAppTime = Date().timeIntervalSince1970
-            pendingExternalURL = urlString
-            
-            UIApplication.shared.open(url, options: [:]) { success in
-                
             }
             return nil
         }
+        
+        let isSameDomain = checkSameDomain(currentHost: currentHost, newHost: newHost)
+        
+        if isSameDomain {
+            
+            if !navigationHistory.contains(urlString) {
+                navigationHistory.append(urlString)
+            }
+            
+            DispatchQueue.main.async {
+                webView.load(URLRequest(url: url))
+            }
+            return nil
+        }
+        
+        isMovingToExternalApp = true
+        lastExternalAppTime = Date().timeIntervalSince1970
+        pendingExternalURL = urlString
+        
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        }
+        return nil
+    }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         hideLoadingCover()
         
-        // URL 오류 시 최적화된 URL로 재시도
         if let urlString = config.url, let optimizedURL = URL(string: optimizeURL(urlString)) {
             let request = URLRequest(url: optimizedURL)
             webView.load(request)
         }
     }
     
-    // 카카오 지원 스크립트 주입
     private func injectKakaoSupportScript() {
         let kakaoScript = """
         (function() {
-            // 카카오 SDK가 로드되었는지 확인
             if (typeof Kakao !== 'undefined') {
-                // 기존 카카오 공유 함수를 확장
                 const originalSend = Kakao.Share.sendDefault;
                 Kakao.Share.sendDefault = function(options) {
                     try {
                         return originalSend.call(this, options);
                     } catch(e) {
-                        // 네이티브 앱으로 공유 시도
                         const kakaoLink = 'kakaolink://send?' + encodeURIComponent(JSON.stringify(options));
                         window.location.href = kakaoLink;
                     }
                 };
                 
-                console.log('카카오 공유 기능이 향상되었습니다.');
             }
             
-            // 카카오톡 앱 감지 및 설치 유도
             window.checkKakaoTalk = function() {
                 return new Promise((resolve) => {
                     const iframe = document.createElement('iframe');
@@ -1462,12 +1655,11 @@ extension InAppBrowserViewController: WKNavigationDelegate {
                     
                     setTimeout(() => {
                         document.body.removeChild(iframe);
-                        resolve(false); // 설치되지 않음
+                        resolve(false);
                     }, 1000);
                     
-                    // 앱이 열리면 이 타이머는 실행되지 않음
                     setTimeout(() => {
-                        resolve(true); // 설치됨
+                        resolve(true); 
                     }, 100);
                 });
             };
@@ -1480,21 +1672,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
 
 // MARK: - WKScriptMessageHandler
 extension InAppBrowserViewController: WKScriptMessageHandler {
-    // 개발/테스트용 ATT 리셋 함수 (실제 배포에서는 제거 권장)
-//    func requestAdidConsentAgain() {
-//        if #available(iOS 14.5, *) {
-//            // UserDefaults에서 ATT 관련 데이터 삭제 (완전하지 않음)
-//            let bundleId = Bundle.main.bundleIdentifier ?? ""
-//            UserDefaults.standard.removeObject(forKey: "ATTrackingManagerStatus_\(bundleId)")
-//            
-//            // 강제로 권한 요청 다시 시도
-//            ATTrackingManager.requestTrackingAuthorization { status in
-//                DispatchQueue.main.async {
-//                    
-//                }
-//            }
-//        }
-//    }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
         
@@ -1529,18 +1706,28 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                        let callbackFunction = body["callbackFunction"] as? String {
                         showRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
                     }
-                
-                case "requestAdIdConsent":
+                case "requestAdIdConsent", "requestATTPermission":
                     if let callbackFunction = body["callbackFunction"] as? String {
                         requestATTPermission(callbackFunction: callbackFunction)
                     }
-                    
-                case "checkAdIdConsentStatus":
+                case "checkAdIdConsentStatus", "getATTStatus":
                     if let callbackFunction = body["callbackFunction"] as? String {
                         checkATTStatus(callbackFunction: callbackFunction)
                     }
-                
-                // 백 액션 제어 추가
+                    
+                case "getAdvertisingId":
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        getAdvertisingId(callbackFunction: callbackFunction)
+                    }
+                    
+                case "openExternalURL":
+                    if let urlString = body["url"] as? String,
+                       let url = URL(string: urlString) {
+                        
+                        DispatchQueue.main.async {
+                            UIApplication.shared.open(url, options: [:])
+                        }
+                    }
                 case "setBackAction":
                     if let action = body["action"] as? String {
                         setBackActionFromWeb(action)
@@ -1555,12 +1742,9 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                     if let timeout = body["timeout"] as? Double {
                         setBackConfirmTimeoutFromWeb(timeout)
                     }
-                    
                 case "triggerBackAction":
                     handleBackAction()
-                    
-//                case "requestAdidConsentAgain":
-//                    requestAdidConsentAgain()
+                
                     
                 default:
                     break
@@ -1587,30 +1771,29 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
 // MARK: - Web Control Functions (백 액션 제어)
 extension InAppBrowserViewController {
     
-    // 웹에서 백 액션 설정
     func setBackActionFromWeb(_ actionString: String) {
         switch actionString {
-        case "exit", "close":
-            currentBackAction = .exit
-        case "history-back", "historyBack":
-            currentBackAction = .historyBack
-        default:
-            currentBackAction = .historyBack
-        }
+         case "exit", "close":
+             currentBackAction = .exit
+         case "confirm-exit":
+             currentBackAction = .confirmExit
+         case "history-back", "historyBack":
+             currentBackAction = .historyBack
+         case "ignore":
+             currentBackAction = .ignore
+         default:
+             currentBackAction = .historyBack
+         }
         
         
     }
     
-    // 웹에서 확인 메시지 설정
     func setBackConfirmMessageFromWeb(_ message: String) {
         backConfirmMessage = message
-//        
     }
     
-    // 웹에서 확인 타임아웃 설정
     func setBackConfirmTimeoutFromWeb(_ timeout: Double) {
         backConfirmTimeout = timeout
-//        
     }
 }
 // MARK: - Ad Related Functions
@@ -1620,7 +1803,6 @@ extension InAppBrowserViewController {
     }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
             
-            // 안전장치: 이미 Alert가 표시중이거나 웹뷰가 없으면 즉시 처리
             guard !isShowingAlert,
                   let webView = self.webView,
                   webView == webView,
@@ -1629,7 +1811,6 @@ extension InAppBrowserViewController {
                 return
             }
             
-            // 메인 큐에서 안전하게 처리
             DispatchQueue.main.async { [weak self] in
                 guard let self = self,
                       !self.isShowingAlert,
@@ -1644,14 +1825,11 @@ extension InAppBrowserViewController {
                     preferredStyle: .alert
                 )
                 
-                // ✅ 확인 버튼 - 반드시 completionHandler 호출
                 alertController.addAction(UIAlertAction(title: "확인", style: .default) { _ in
                     completionHandler()
                 })
                 
-                // ✅ Alert 표시 시도
                 self.present(alertController, animated: true) {
-                    // 표시에 실패했다면 completionHandler 호출
                     if alertController.presentingViewController == nil {
                         completionHandler()
                     }
@@ -1659,7 +1837,6 @@ extension InAppBrowserViewController {
             }
         }
         
-        // ✅ JavaScript Confirm 안전하게 표시
         func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
             
             guard !isShowingAlert,
@@ -1684,7 +1861,6 @@ extension InAppBrowserViewController {
                     preferredStyle: .alert
                 )
                 
-                // ✅ 취소와 확인 버튼
                 alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
                     completionHandler(false)
                 })
@@ -1701,7 +1877,6 @@ extension InAppBrowserViewController {
             }
         }
 
-        // ✅ JavaScript Prompt 안전하게 표시
         func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
             
             guard !isShowingAlert,
@@ -1726,12 +1901,10 @@ extension InAppBrowserViewController {
                     preferredStyle: .alert
                 )
                 
-                // ✅ 텍스트 필드 추가
                 alertController.addTextField { textField in
                     textField.text = defaultText
                 }
                 
-                // ✅ 취소와 확인 버튼
                 alertController.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in
                     completionHandler(nil)
                 })
@@ -1748,42 +1921,17 @@ extension InAppBrowserViewController {
                 }
             }
         }
-    // ✅ JavaScript alert 처리 - 안전한 버전
-//    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-//        
-//        // 즉시 완료 처리 - 크래시 방지
-//        
-//        completionHandler()
-//    }
-    
-//    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-//        
-//        // 즉시 true로 완료 처리
-//        
-//        completionHandler(true)
-//    }
-
-//    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
-//        
-//        // 즉시 기본값으로 완료 처리
-//        
-//        completionHandler(defaultText ?? "")
-//    }
     func updateConfiguration(_ newConfig: InAppBrowserConfig) {
-            // ✅ config 자체를 교체
             self.config = newConfig
             
-            // 백 액션 설정 업데이트
             self.currentBackAction = newConfig.backAction
             self.backConfirmMessage = newConfig.backConfirmMessage
             self.backConfirmTimeout = newConfig.backConfirmTimeout
             
-            // ✅ 버튼 역할 실시간 업데이트
             updateButtonRoles(leftRole: newConfig.leftButtonRole, rightRole: newConfig.rightButtonRole)
             
             
         }
-    // 보상형 광고 표시
     func showRewardedAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
         
@@ -1794,7 +1942,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 전면 광고 표시
     func showInterstitialAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
         
@@ -1805,7 +1952,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 보상형 전면 광고 표시
     func showRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
         if isLoadingAd { return }
         
@@ -1817,7 +1963,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 기존 보상형 전면 광고 표시
     private func showExistingRewardedInterstitialAd(callbackFunction: String) {
         guard let rewardedInterstitialAd = rewardedInterstitialAd else {
             handleAdNotAvailable(callbackFunction: callbackFunction, type: "rewarded_interstitial", adUnit: currentAdUnitId, adUnitIndex: adUnitIndexCall)
@@ -1834,7 +1979,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 자동 보상형 전면 광고 표시
     func autoShowRewardedInterstitialAd(adUnit: String, delayMs: Int, callbackFunction: String) {
         if isLoadingAd { return }
         
@@ -1855,7 +1999,6 @@ extension InAppBrowserViewController {
         return nil
     }
     
-    // 새 보상형 광고 로드
     private func loadNewRewardedAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
@@ -1927,7 +2070,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 새 전면 광고 로드
     private func loadNewInterstitialAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
@@ -1999,7 +2141,6 @@ extension InAppBrowserViewController {
         }
     }
     
-    // 새 보상형 전면 광고 로드
     private func loadNewRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
         showLoadingCover()
         isLoadingAd = true
@@ -2153,7 +2294,6 @@ extension InAppBrowserViewController {
         }
     }
         
-    // 기존 보상형 광고 표시
     private func showExistingRewardedAd(callbackFunction: String) {
         guard let rewardedAd = rewardedAd else {
             handleAdNotAvailable(callbackFunction: callbackFunction, type: "rewarded", adUnit: currentAdUnitId, adUnitIndex: adUnitIndexCall)
@@ -2171,17 +2311,14 @@ extension InAppBrowserViewController {
         }
     }
         
-    // 광고 사용 불가능 처리
     private func handleAdNotAvailable(callbackFunction: String, type: String, adUnit: String, adUnitIndex: Int) {
         webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"failed\", \"\(adUnit)\", \(adUnitIndex));")
     }
         
-    // 광고 로드 오류 처리
     private func handleAdLoadError(callbackFunction: String, type: String, adUnit: String, adUnitIndex: Int) {
         webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(type)\", \"failed\", \"\(adUnit)\", \(adUnitIndex));")
     }
         
-    // 광고 상태 초기화
     private func resetAdState() {
         interstitialAd = nil
         rewardedAd = nil
@@ -2196,74 +2333,316 @@ extension InAppBrowserViewController {
 
 // MARK: - ATT (App Tracking Transparency) Functions
 extension InAppBrowserViewController {
-    
-    // ATT 상태 확인
-    func checkATTStatus(callbackFunction: String) {
-        if #available(iOS 14.5, *) {
-            let status = ATTrackingManager.trackingAuthorizationStatus
-//            handleATTResult(status: status, callbackFunction: callbackFunction)
-        } else {
-            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'authorized', adId: '\(adId)'});")
-        }
-    }
-
-    
-    // ATT 결과 처리
     @available(iOS 14.5, *)
-    private func handleATTResult(status: ATTrackingManager.AuthorizationStatus, callbackFunction: String) {
+    private func notifyWebWithATTStatusAndAdId(status: ATTrackingManager.AuthorizationStatus) {
         var statusString = ""
+        var statusCode = 0
         var adId = ""
         
         switch status {
         case .authorized:
             statusString = "authorized"
+            statusCode = 3
+            adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+        case .denied:
+            statusString = "denied"
+            statusCode = 2
+            adId = ""
+        case .restricted:
+            statusString = "restricted"
+            statusCode = 1
+            adId = ""
+        case .notDetermined:
+            statusString = "notDetermined"
+            statusCode = 0
+            adId = ""
+        @unknown default:
+            statusString = "unknown"
+            statusCode = -1
+            adId = ""
+        }
+        
+        notifyWebWithATTStatusAndAdId(adId: adId, statusString: statusString, statusCode: statusCode)
+    }
+    
+    private func notifyWebWithATTStatusAndAdId(adId: String, statusString: String, statusCode: Int) {
+        let script = """
+        (function() {
+            try {
+                
+                // 1. onReceiveAdId 함수 호출 체크 및 실행 (한 번만!)
+                if (typeof window.onReceiveAdId === 'function') {
+                    window.onReceiveAdId('\(adId)', '\(statusString)', \(statusCode));
+                } else {
+                    
+                    // 함수가 없다면 나중에 호출될 수 있도록 데이터 저장
+                    window._pendingAdIdData = {
+                        adId: '\(adId)',
+                        status: '\(statusString)',
+                        statusCode: \(statusCode)
+                    };
+                    console.log('📦 데이터를 window._pendingAdIdData에 저장');
+                }
+                
+                // 2. 전역 변수 업데이트
+                window.currentAdId = '\(adId)';
+                window.currentATTStatus = '\(statusString)';
+                window.currentATTStatusCode = \(statusCode);
+                console.log('📝 전역 변수 업데이트 완료');
+                
+                // 3. 커스텀 이벤트 발생
+                const event = new CustomEvent('adIdAndATTStatusReceived', { 
+                    detail: {
+                        adId: '\(adId)',
+                        status: '\(statusString)',
+                        statusCode: \(statusCode)
+                    }
+                });
+                window.dispatchEvent(event);
+                
+                const callbackPatterns = [
+                    'handleAdId',        // onReceiveAdId 제거!
+                    'processAdId',
+                    'adIdCallback'
+                ];
+                
+                callbackPatterns.forEach(pattern => {
+                    if (typeof window[pattern] === 'function') {
+                        try {
+                            window[pattern]('\(adId)', '\(statusString)', \(statusCode));
+                        } catch(e) {
+                        }
+                    }
+                });
+                
+                return true;
+            } catch(e) {
+                return false;
+            }
+        })();
+        """
+        
+        
+        webView.evaluateJavaScript(script) { (result, error) in
+            if let error = error {
+            } else if let success = result as? Bool, success {
+            } else {
+            }
+        }
+    }
+        @available(iOS 14.5, *)
+        private func createATTResultJson(status: ATTrackingManager.AuthorizationStatus) -> String {
+            var statusString = ""
+            var statusCode = 0
+            var adId = ""
+            
+            switch status {
+            case .authorized:
+                statusString = "authorized"
+                statusCode = 3
+                adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            case .denied:
+                statusString = "denied"
+                statusCode = 2
+            case .restricted:
+                statusString = "restricted"
+                statusCode = 1
+            case .notDetermined:
+                statusString = "notDetermined"
+                statusCode = 0
+            @unknown default:
+                statusString = "unknown"
+                statusCode = -1
+            }
+            
+            return """
+            {
+                "status": "\(statusString)",
+                "statusCode": \(statusCode),
+                "adId": "\(adId)"
+            }
+            """
+        }
+        
+    func notifyWebWithAdId(_ adId: String) {
+        
+        if #available(iOS 14.5, *) {
+            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+            notifyWebWithATTStatusAndAdId(status: currentStatus)
+        } else {
+            notifyWebWithATTStatusAndAdId(adId: adId, statusString: "authorized", statusCode: 3)
+        }
+    }
+    func openATTSettings(callbackFunction: String) {
+        guard let settingsUrl = URL(string: UIApplication.openSettingsURLString) else {
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({success: false});")
+            return
+        }
+        
+        if UIApplication.shared.canOpenURL(settingsUrl) {
+            UIApplication.shared.open(settingsUrl) { [weak self] success in
+                DispatchQueue.main.async {
+                    self?.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({success: \(success)});")
+                }
+            }
+        } else {
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({success: false});")
+        }
+    }
+
+    @available(iOS 14.5, *)
+    private func handleATTResult(status: ATTrackingManager.AuthorizationStatus, callbackFunction: String) {
+        let canRequestPermission = (status == .notDetermined)
+        let resultJson = createATTResultJson(status: status, canRequestPermission: canRequestPermission)
+        
+        webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+        
+        if status == .authorized {
+            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            notifyWebWithAdId(adId)
+        }
+    }
+    func getAdvertisingId(callbackFunction: String) {
+        
+        if #available(iOS 14.5, *) {
+            let status = ATTrackingManager.trackingAuthorizationStatus
+            
+            if status == .authorized {
+                let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+                let jsonResult = """
+                {"adId": "\(adId)", "available": true, "status": "authorized"}
+                """
+                
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
+            } else {
+                let jsonResult = """
+                {"adId": "", "available": false, "status": "\(getATTStatusString(status))"}
+                """
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
+            }
+        } else {
+            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            let jsonResult = """
+            {"adId": "\(adId)", "available": true, "status": "authorized"}
+            """
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
+        }
+    }
+
+    func checkATTStatus(callbackFunction: String) {
+        
+        if #available(iOS 14.5, *) {
+            let status = ATTrackingManager.trackingAuthorizationStatus
+            let resultJson = createATTResultJson(status: status)
+            
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+        } else {
+            let resultJson = """
+            {"status": "authorized", "statusCode": 3, "adId": "\(ASIdentifierManager.shared().advertisingIdentifier.uuidString)"}
+            """
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+        }
+    }
+
+    func requestATTPermission(callbackFunction: String) {
+        
+        if #available(iOS 14.5, *) {
+            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+            
+            if currentStatus != .notDetermined {
+                // 이미 결정된 상태 - 콜백만 실행
+                let resultJson = createATTResultJson(status: currentStatus)
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+                return
+            }
+            
+            // ATT 팝업 표시
+            ATTrackingManager.requestTrackingAuthorization { [weak self] status in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    let resultJson = self.createATTResultJson(status: status)
+                    
+                    self.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+                }
+            }
+        } else {
+            let resultJson = """
+            {"status": "authorized", "statusCode": 3, "adId": "\(ASIdentifierManager.shared().advertisingIdentifier.uuidString)"}
+            """
+            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+        }
+    }
+
+
+    private func sendInitialATTStatusOnce() {
+        
+        if #available(iOS 14.5, *) {
+            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+            
+            
+            self.notifyWebWithATTStatusAndAdId(status: currentStatus)
+        } else {
+            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            
+            
+            self.notifyWebWithATTStatusAndAdId(adId: adId, statusString: "authorized", statusCode: 3)
+        }
+        
+    }
+    @available(iOS 14.5, *)
+   private func getATTStatusString(_ status: ATTrackingManager.AuthorizationStatus) -> String {
+       switch status {
+       case .authorized: return "authorized"
+       case .denied: return "denied"
+       case .restricted: return "restricted"
+       case .notDetermined: return "notDetermined"
+       @unknown default: return "unknown"
+       }
+   }
+    @available(iOS 14.5, *)
+    private func createATTResultJson(status: ATTrackingManager.AuthorizationStatus, canRequestPermission: Bool) -> String {
+        var statusString = ""
+        var statusCode = 0
+        var adId = ""
+        
+        switch status {
+        case .authorized:
+            statusString = "authorized"
+            statusCode = 3
             adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
             
         case .denied:
             statusString = "denied"
+            statusCode = 2
             adId = ""
             
         case .restricted:
             statusString = "restricted"
+            statusCode = 1
             adId = ""
             
         case .notDetermined:
             statusString = "notDetermined"
+            statusCode = 0
             adId = ""
             
         @unknown default:
             statusString = "unknown"
+            statusCode = -1
             adId = ""
         }
         
-        webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: '\(statusString)', adId: '\(adId)'});")
-        notifyWebWithAdId(adId)
-    }
-    
-    func requestATTPermission(callbackFunction: String) {
-        if #available(iOS 14.5, *) {
-            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
-            
-            // 이미 결정된 상태라면 설정 앱으로 안내
-            if currentStatus != .notDetermined {
-                // 이미 결정된 경우 현재 상태만 반환
-                handleATTResult(status: currentStatus, callbackFunction: callbackFunction)
-                return
-            }
-            
-            // 아직 결정되지 않은 경우에만 ATT 팝업 표시
-            ATTrackingManager.requestTrackingAuthorization { [weak self] status in
-                DispatchQueue.main.async {
-                    self?.handleATTResult(status: status, callbackFunction: callbackFunction)
-                }
-            }
-        } else {
-            // iOS 14.5 미만에서는 바로 광고 ID 제공
-            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)({status: 'authorized', adId: '\(adId)'});")
-            notifyWebWithAdId(adId)
+        let resultJson = """
+        {
+            "status": "\(statusString)",
+            "statusCode": \(statusCode),
+            "adId": "\(adId)",
+            "canRequestPermission": \(canRequestPermission)
         }
+        """
+        
+        return resultJson
     }
 }
 
@@ -2312,17 +2691,14 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
         }
         resetAdState()
     }
+    
 }
-// InAppBrowserViewController.swift에 추가
 extension InAppBrowserViewController {
-    // 런타임에 버튼 역할 업데이트
     func updateButtonRoles(leftRole: InAppBrowserConfig.ButtonRole, rightRole: InAppBrowserConfig.ButtonRole) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
             
-            
-            // ✅ 태그로 버튼 찾기
             if let leftButton = self.view.viewWithTag(100) as? UIButton {
                 
                 self.setupButton(leftButton, role: leftRole, icon: self.config.leftButtonIcon, isLeft: true)
@@ -2352,36 +2728,7 @@ private func convertStringToButtonRole(_ roleString: String) -> InAppBrowserConf
     }
 }
 
-// MARK: - WKUIDelegate Functions
-extension InAppBrowserViewController {
-    
-    // 웹페이지에 광고 ID 전달
-    func notifyWebWithAdId(_ adId: String) {
-        let script = """
-        (function() {
-            try {
-                if (typeof window.onReceiveAdId === 'function') {
-                    window.onReceiveAdId('\(adId)');
-                    return true;
-                }
-            } catch(e) {
-                console.error('광고 ID 전달 중 오류 발생: ' + e);
-                return false;
-            }
-        })();
-        """
-        
-        webView.evaluateJavaScript(script) { (result, error) in
-            if let error = error {
-//                
-            } else if let success = result as? Bool {
-//                
-            }
-        }
-    }
-}
 
-// WKWebView JavaScript 실행 확장
 extension WKWebView {
     func evaluateJavaScriptSafely(_ script: String, completion: ((Any?, Error?) -> Void)? = nil) {
         DispatchQueue.main.async {
@@ -2389,3 +2736,4 @@ extension WKWebView {
         }
     }
 }
+

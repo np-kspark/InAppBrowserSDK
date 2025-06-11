@@ -52,30 +52,32 @@ public class InAppBrowserConfig {
     var closeButtonRightMargin: Int = -1
     var closeButtonTopMargin: Int = -1
     var closeButtonBottomMargin: Int = -1
+    
+    var allowImageSave: Bool = false
+    var allowImageZoom: Bool = false
+    var allowImageDrag: Bool = false
+    var allowImageSelect: Bool = false
 
-    // 캐시 방지 설정 추가
     var preventCache: Bool = true
     
-    // 버튼 역할 열거형
     public enum ButtonRole {
-        case back    // 뒤로가기
-        case close   // 닫기
-        case none    // 비활성화
+        case back
+        case close
+        case none
     }
     
-    // 백 액션 열거형 추가
     public enum BackAction {
-        case exit           // 바로 종료
-        case confirmExit    // 확인 후 종료 (더블탭)
-        case historyBack    // 히스토리 뒤로가기 → 종료
-        case ignore         // 무시 (아무것도 안함)
+        case exit
+        case confirmExit
+        case historyBack
+        case ignore
     }
     
     public enum ButtonIcon {
-        case auto           // 역할에 따라 자동 (back=화살표, close=X)
-        case back           // 항상 뒤로가기 화살표
-        case close          // 항상 X 아이콘
-        case custom(String) // 커스텀 이미지
+        case auto
+        case back
+        case close
+        case custom(String)
     }
     
     private init() {}
@@ -294,6 +296,26 @@ public class InAppBrowserConfig {
 
         public func setPreventCache(_ prevent: Bool) -> Builder {
             config.preventCache = prevent
+            return self
+        }
+        
+        public func setAllowImageSave(_ allow: Bool) -> Builder {
+            config.allowImageSave = allow
+            return self
+        }
+        
+        public func setAllowImageZoom(_ allow: Bool) -> Builder {
+            config.allowImageZoom = allow
+            return self
+        }
+        
+        public func setAllowImageDrag(_ allow: Bool) -> Builder {
+            config.allowImageDrag = allow
+            return self
+        }
+        
+        public func setAllowImageSelect(_ allow: Bool) -> Builder {
+            config.allowImageSelect = allow
             return self
         }
         
