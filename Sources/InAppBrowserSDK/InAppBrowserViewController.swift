@@ -758,168 +758,170 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
     }
     
-    private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole, isLeft: Bool) {
-        // === 디버깅 시작 ===
-        print("\n🔍 === 이미지 로딩 디버깅 ===")
+    // 상세 디버깅 코드 - 실제 setupButtonIcon에 추가해서 테스트
+
+private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole, isLeft: Bool) {
+    // === 디버깅 시작 ===
+    print("\n🔍 === 이미지 로딩 디버깅 ===")
+    
+    // 1. 번들 정보 확인
+    let currentBundle = Bundle(for: InAppBrowserViewController.self)
+    print("📦 현재 번들 ID: \(currentBundle.bundleIdentifier ?? "unknown")")
+    print("📦 번들 경로: \(currentBundle.bundlePath)")
+    
+    // 2. 리소스 경로 상세 확인
+    if let resourceURL = currentBundle.resourceURL {
+        print("📁 리소스 URL: \(resourceURL)")
         
-        // 1. 번들 정보 확인
-        let currentBundle = Bundle(for: InAppBrowserViewController.self)
-        print("📦 현재 번들 ID: \(currentBundle.bundleIdentifier ?? "unknown")")
-        print("📦 번들 경로: \(currentBundle.bundlePath)")
-        
-        // 2. 리소스 경로 상세 확인
-        if let resourceURL = currentBundle.resourceURL {
-            print("📁 리소스 URL: \(resourceURL)")
-            
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(at: resourceURL, includingPropertiesForKeys: nil)
-                print("📋 리소스 폴더 내용 (\(contents.count)개):")
-                for item in contents {
-                    print("  📄 \(item.lastPathComponent)")
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(at: resourceURL, includingPropertiesForKeys: nil)
+            print("📋 리소스 폴더 내용 (\(contents.count)개):")
+            for item in contents {
+                print("  📄 \(item.lastPathComponent)")
+                
+                // Assets.xcassets 찾기
+                if item.lastPathComponent == "Assets.xcassets" {
+                    print("    ✅ Assets.xcassets 발견!")
                     
-                    // Assets.xcassets 찾기
-                    if item.lastPathComponent == "Assets.xcassets" {
-                        print("    ✅ Assets.xcassets 발견!")
-                        
-                        // Assets 내부 확인
-                        do {
-                            let assetContents = try FileManager.default.contentsOfDirectory(at: item, includingPropertiesForKeys: nil)
-                            print("    📋 Assets 내부:")
-                            for asset in assetContents {
-                                print("      🖼️ \(asset.lastPathComponent)")
-                            }
-                        } catch {
-                            print("    ❌ Assets 내부 읽기 실패: \(error)")
+                    // Assets 내부 확인
+                    do {
+                        let assetContents = try FileManager.default.contentsOfDirectory(at: item, includingPropertiesForKeys: nil)
+                        print("    📋 Assets 내부:")
+                        for asset in assetContents {
+                            print("      🖼️ \(asset.lastPathComponent)")
                         }
+                    } catch {
+                        print("    ❌ Assets 내부 읽기 실패: \(error)")
                     }
                 }
-            } catch {
-                print("❌ 리소스 폴더 읽기 실패: \(error)")
             }
-        } else {
-            print("❌ 리소스 URL이 nil")
+        } catch {
+            print("❌ 리소스 폴더 읽기 실패: \(error)")
         }
+    } else {
+        print("❌ 리소스 URL이 nil")
+    }
+    
+    // 3. Bundle.module 테스트 (iOS 13+)
+    if #available(iOS 13.0, *) {
+        print("\n📦 Bundle.module 테스트:")
         
-        // 3. Bundle.module 테스트 (iOS 13+)
-        if #available(iOS 13.0, *) {
-            print("\n📦 Bundle.module 테스트:")
+        // Bundle.module이 실제로 존재하는지 확인
+        do {
+            // 이 방법으로 Bundle.module 접근 시도
+            let moduleBundle = Bundle.module
+            print("✅ Bundle.module 접근 성공")
+            print("📦 Module Bundle ID: \(moduleBundle.bundleIdentifier ?? "unknown")")
+            print("📦 Module Bundle 경로: \(moduleBundle.bundlePath)")
             
-            // Bundle.module이 실제로 존재하는지 확인
-            do {
-                // 이 방법으로 Bundle.module 접근 시도
-                let moduleBundle = Bundle.module
-                print("✅ Bundle.module 접근 성공")
-                print("📦 Module Bundle ID: \(moduleBundle.bundleIdentifier ?? "unknown")")
-                print("📦 Module Bundle 경로: \(moduleBundle.bundlePath)")
-                
-                // Bundle.module에서 이미지 찾기
-                let testImage = UIImage(named: "_ico", in: moduleBundle, compatibleWith: nil)
-                print("🖼️ Bundle.module에서 _ico 찾기: \(testImage != nil ? "성공" : "실패")")
-                
-            } catch {
-                print("❌ Bundle.module 접근 실패: \(error)")
-            }
-        }
-        
-        // 4. 여러 방법으로 이미지 찾기 테스트
-        print("\n🖼️ 이미지 찾기 테스트:")
-        
-        let testImages = ["_ico", "custom_back_icon", "custom_close_icon"]
-        
-        for imageName in testImages {
-            print("\n  테스트 이미지: \(imageName)")
+            // Bundle.module에서 이미지 찾기
+            let testImage = UIImage(named: "_ico", in: moduleBundle, compatibleWith: nil)
+            print("🖼️ Bundle.module에서 _ico 찾기: \(testImage != nil ? "성공" : "실패")")
             
-            // 방법 1: 현재 번들
-            let img1 = UIImage(named: imageName, in: currentBundle, compatibleWith: nil)
-            print("    방법1 (현재 번들): \(img1 != nil ? "✅" : "❌")")
-            
-            // 방법 2: 메인 번들
-            let img2 = UIImage(named: imageName, in: Bundle.main, compatibleWith: nil)
-            print("    방법2 (메인 번들): \(img2 != nil ? "✅" : "❌")")
-            
-            // 방법 3: Bundle.module (iOS 13+)
-            if #available(iOS 13.0, *) {
-                let img3 = UIImage(named: imageName, in: Bundle.module, compatibleWith: nil)
-                print("    방법3 (Bundle.module): \(img3 != nil ? "✅" : "❌")")
-            }
-            
-            // 방법 4: 번들 없이 (기본)
-            let img4 = UIImage(named: imageName)
-            print("    방법4 (기본): \(img4 != nil ? "✅" : "❌")")
-        }
-        
-        // === 디버깅 끝 ===
-        
-        // 1단계: 위치에 따라 커스텀 이미지명 확인
-        let customImageName = isLeft ? config.backButtonImageName : config.closeButtonImageName
-        
-        // 커스텀 이미지명이 설정되어 있으면 SPM 패키지 내장 asset 사용
-        if let customImageName = customImageName, !customImageName.isEmpty {
-            print("\n🎯 커스텀 이미지 로딩 시도: \(customImageName)")
-            
-            var packageImage: UIImage?
-            
-            // iOS 13+ Bundle.module 사용
-            if #available(iOS 13.0, *) {
-                packageImage = UIImage(named: customImageName, in: Bundle.module, compatibleWith: nil)
-                print("📦 Bundle.module 결과: \(packageImage != nil ? "성공" : "실패")")
-            }
-            
-            // Fallback: 현재 클래스가 속한 Bundle
-            if packageImage == nil {
-                packageImage = UIImage(named: customImageName, in: currentBundle, compatibleWith: nil)
-                print("📦 현재 번들 결과: \(packageImage != nil ? "성공" : "실패")")
-            }
-            
-            if let image = packageImage {
-                button.setImage(image.withRenderingMode(.alwaysOriginal), for: .normal)
-                print("✅ 커스텀 이미지 적용 성공!")
-                return
-            } else {
-                print("❌ 커스텀 이미지 적용 실패")
-            }
-        }
-        
-        // 2단계: 기존 로직 그대로 실행
-        switch icon {
-        case .auto:
-            if role == .back {
-                // _ico 이미지 시도
-                var backImage: UIImage?
-                
-                if #available(iOS 13.0, *) {
-                    backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil)
-                }
-                
-                if backImage == nil {
-                    backImage = UIImage(named: "_ico", in: currentBundle, compatibleWith: nil)
-                }
-                
-                let finalImage = backImage ?? UIImage(systemName: "chevron.left")
-                button.setImage(finalImage, for: .normal)
-                
-                print("🎯 최종 백 버튼 이미지: \(backImage != nil ? "SDK 이미지" : "시스템 이미지")")
-            } else {
-                button.setImage(UIImage(systemName: "xmark"), for: .normal)
-            }
-            button.tintColor = config.toolbarMode == "dark" ? .white : .black
-            
-        case .back:
-            button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
-            button.tintColor = config.toolbarMode == "dark" ? .white : .black
-            
-        case .close:
-            button.setImage(UIImage(systemName: "xmark"), for: .normal)
-            button.tintColor = config.toolbarMode == "dark" ? .white : .black
-            
-        case .custom(let imageName):
-            if let customImage = UIImage(named: imageName) {
-                button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
-            } else {
-                setupButtonIcon(button, icon: .auto, role: role, isLeft: isLeft)
-            }
+        } catch {
+            print("❌ Bundle.module 접근 실패: \(error)")
         }
     }
+    
+    // 4. 여러 방법으로 이미지 찾기 테스트
+    print("\n🖼️ 이미지 찾기 테스트:")
+    
+    let testImages = ["_ico", "custom_back_icon", "custom_close_icon"]
+    
+    for imageName in testImages {
+        print("\n  테스트 이미지: \(imageName)")
+        
+        // 방법 1: 현재 번들
+        let img1 = UIImage(named: imageName, in: currentBundle, compatibleWith: nil)
+        print("    방법1 (현재 번들): \(img1 != nil ? "✅" : "❌")")
+        
+        // 방법 2: 메인 번들
+        let img2 = UIImage(named: imageName, in: Bundle.main, compatibleWith: nil)
+        print("    방법2 (메인 번들): \(img2 != nil ? "✅" : "❌")")
+        
+        // 방법 3: Bundle.module (iOS 13+)
+        if #available(iOS 13.0, *) {
+            let img3 = UIImage(named: imageName, in: Bundle.module, compatibleWith: nil)
+            print("    방법3 (Bundle.module): \(img3 != nil ? "✅" : "❌")")
+        }
+        
+        // 방법 4: 번들 없이 (기본)
+        let img4 = UIImage(named: imageName)
+        print("    방법4 (기본): \(img4 != nil ? "✅" : "❌")")
+    }
+    
+    // === 디버깅 끝 ===
+    
+    // 1단계: 위치에 따라 커스텀 이미지명 확인
+    let customImageName = isLeft ? config.backButtonImageName : config.closeButtonImageName
+    
+    // 커스텀 이미지명이 설정되어 있으면 SPM 패키지 내장 asset 사용
+    if let customImageName = customImageName, !customImageName.isEmpty {
+        print("\n🎯 커스텀 이미지 로딩 시도: \(customImageName)")
+        
+        var packageImage: UIImage?
+        
+        // iOS 13+ Bundle.module 사용
+        if #available(iOS 13.0, *) {
+            packageImage = UIImage(named: customImageName, in: Bundle.module, compatibleWith: nil)
+            print("📦 Bundle.module 결과: \(packageImage != nil ? "성공" : "실패")")
+        }
+        
+        // Fallback: 현재 클래스가 속한 Bundle
+        if packageImage == nil {
+            packageImage = UIImage(named: customImageName, in: currentBundle, compatibleWith: nil)
+            print("📦 현재 번들 결과: \(packageImage != nil ? "성공" : "실패")")
+        }
+        
+        if let image = packageImage {
+            button.setImage(image.withRenderingMode(.alwaysOriginal), for: .normal)
+            print("✅ 커스텀 이미지 적용 성공!")
+            return
+        } else {
+            print("❌ 커스텀 이미지 적용 실패")
+        }
+    }
+    
+    // 2단계: 기존 로직 그대로 실행
+    switch icon {
+    case .auto:
+        if role == .back {
+            // _ico 이미지 시도
+            var backImage: UIImage?
+            
+            if #available(iOS 13.0, *) {
+                backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil)
+            }
+            
+            if backImage == nil {
+                backImage = UIImage(named: "_ico", in: currentBundle, compatibleWith: nil)
+            }
+            
+            let finalImage = backImage ?? UIImage(systemName: "chevron.left")
+            button.setImage(finalImage, for: .normal)
+            
+            print("🎯 최종 백 버튼 이미지: \(backImage != nil ? "SDK 이미지" : "시스템 이미지")")
+        } else {
+            button.setImage(UIImage(systemName: "xmark"), for: .normal)
+        }
+        button.tintColor = config.toolbarMode == "dark" ? .white : .black
+        
+    case .back:
+        button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+        button.tintColor = config.toolbarMode == "dark" ? .white : .black
+        
+    case .close:
+        button.setImage(UIImage(systemName: "xmark"), for: .normal)
+        button.tintColor = config.toolbarMode == "dark" ? .white : .black
+        
+    case .custom(let imageName):
+        if let customImage = UIImage(named: imageName) {
+            button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
+        } else {
+            setupButtonIcon(button, icon: .auto, role: role, isLeft: isLeft)
+        }
+    }
+}
     
     private func setupWebView() {
         if webView.url != nil {
