@@ -758,25 +758,25 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
     }
 
+
     private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
-        // 버튼 위치 구분 (100=왼쪽, 200=오른쪽)
-        let isLeft = (button.tag == 100)
         
-        // 1단계: 커스텀 이미지명이 있으면 SPM 패키지 asset 사용
-        let customImageName = isLeft ? config.backButtonImageName : config.closeButtonImageName
+        let currentBundle = Bundle(for: InAppBrowserViewController.self)
         
-        if let customImageName = customImageName, !customImageName.isEmpty {
-            if let packageImage = UIImage(named: customImageName, in: Bundle.module, compatibleWith: nil) {
-                button.setImage(packageImage.withRenderingMode(.alwaysOriginal), for: .normal)
-                return
-            }
-        }
+        let img1 = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil)
         
-        // 2단계: 기존 로직
+        // 방법 2: 현재 번들
+        let img2 = UIImage(named: "_ico", in: currentBundle, compatibleWith: nil)
+        
+        // 방법 3: 기본
+        let img3 = UIImage(named: "_ico")
+        
+        // 기존 로직
         switch icon {
         case .auto:
             if role == .back {
-                let backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil) ?? 
+                let backImage = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil) ??
+                            UIImage(named: "_ico", in: currentBundle, compatibleWith: nil) ??
                             UIImage(systemName: "chevron.left")
                 button.setImage(backImage, for: .normal)
             } else {
@@ -785,7 +785,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .back:
-            let backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil) ?? 
+            let backImage = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil) ??
+                        UIImage(named: "_ico", in: currentBundle, compatibleWith: nil) ??
                         UIImage(systemName: "chevron.left")
             button.setImage(backImage, for: .normal)
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
@@ -795,11 +796,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .custom(let imageName):
-            let customImage = UIImage(named: imageName, in: Bundle.module, compatibleWith: nil) ??
-                            UIImage(named: imageName)
-            
-            if let image = customImage {
-                button.setImage(image.withRenderingMode(.alwaysOriginal), for: .normal)
+            if let customImage = UIImage(named: imageName) {
+                button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
             } else {
                 setupButtonIcon(button, icon: .auto, role: role)
             }
@@ -2759,24 +2757,25 @@ extension WKWebView {
     }
 }
 
-private extension Bundle {
-    static var module: Bundle {
+extension Bundle {
+    static var resourceBundle: Bundle {
+        #if SWIFT_PACKAGE
+        return Bundle.module
+        #else
         let bundleName = "InAppBrowserSDK_InAppBrowserSDK"
         
-        // 메인 번들에서 찾기
         if let bundleURL = Bundle.main.url(forResource: bundleName, withExtension: "bundle"),
            let bundle = Bundle(url: bundleURL) {
             return bundle
         }
         
-        // 현재 클래스 번들에서 찾기
         let currentBundle = Bundle(for: InAppBrowserViewController.self)
         if let bundleURL = currentBundle.url(forResource: bundleName, withExtension: "bundle"),
            let bundle = Bundle(url: bundleURL) {
             return bundle
         }
         
-        // Fallback
         return currentBundle
+        #endif
     }
 }
