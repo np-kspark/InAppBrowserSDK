@@ -757,6 +757,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
         
     }
+    
     private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
         let customImageName = (role == .back) ? config.backButtonImageName : config.closeButtonImageName
             
@@ -769,14 +770,14 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         switch icon {
         case .auto:
             if role == .back {
-                button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+                button.setImage(UIImage(named: "_ico"), for: .normal)
             } else {
                 button.setImage(UIImage(systemName: "xmark"), for: .normal)
             }
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .back:
-            button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+            button.setImage(UIImage(named: "_ico"), for: .normal)
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .close:
