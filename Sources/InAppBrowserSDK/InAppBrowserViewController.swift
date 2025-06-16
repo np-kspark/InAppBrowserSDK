@@ -758,58 +758,53 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
     }
 
-
-private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
-    
-    // _ico 이미지 테스트
-    print("\n🔍 _ico 이미지 테스트:")
-    
-    let currentBundle = Bundle(for: InAppBrowserViewController.self)
-    print("📦 현재 번들: \(currentBundle.bundlePath)")
-    
-    // 방법 1: Bundle.resourceBundle (수정된 이름)
-    let img1 = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil)
-    print("방법1 (Bundle.resourceBundle): \(img1 != nil ? "✅ 성공" : "❌ 실패")")
-    
-    // 방법 2: 현재 번들
-    let img2 = UIImage(named: "_ico", in: currentBundle, compatibleWith: nil)
-    print("방법2 (현재 번들): \(img2 != nil ? "✅ 성공" : "❌ 실패")")
-    
-    // 방법 3: 기본
-    let img3 = UIImage(named: "_ico")
-    print("방법3 (기본): \(img3 != nil ? "✅ 성공" : "❌ 실패")")
-    
-    // 기존 로직
-    switch icon {
-    case .auto:
-        if role == .back {
-            // _ico 시도 - Bundle.module 대신 Bundle.resourceBundle 사용
-            let backImage = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil) ??
-                           UIImage(named: "_ico", in: currentBundle, compatibleWith: nil) ??
-                           UIImage(systemName: "chevron.left")
-            button.setImage(backImage, for: .normal)
-            print("백 버튼 이미지: \(backImage != nil ? "적용됨" : "실패")")
-        } else {
-            button.setImage(UIImage(systemName: "xmark"), for: .normal)
+    private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
+        // 버튼 위치 구분 (100=왼쪽, 200=오른쪽)
+        let isLeft = (button.tag == 100)
+        
+        // 1단계: 커스텀 이미지명이 있으면 SPM 패키지 asset 사용
+        let customImageName = isLeft ? config.backButtonImageName : config.closeButtonImageName
+        
+        if let customImageName = customImageName, !customImageName.isEmpty {
+            if let packageImage = UIImage(named: customImageName, in: Bundle.module, compatibleWith: nil) {
+                button.setImage(packageImage.withRenderingMode(.alwaysOriginal), for: .normal)
+                return
+            }
         }
-        button.tintColor = config.toolbarMode == "dark" ? .white : .black
         
-    case .back:
-        button.setImage(UIImage(systemName: "chevron.left"), for: .normal)
-        button.tintColor = config.toolbarMode == "dark" ? .white : .black
-        
-    case .close:
-        button.setImage(UIImage(systemName: "xmark"), for: .normal)
-        button.tintColor = config.toolbarMode == "dark" ? .white : .black
-        
-    case .custom(let imageName):
-        if let customImage = UIImage(named: imageName) {
-            button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
-        } else {
-            setupButtonIcon(button, icon: .auto, role: role)
+        // 2단계: 기존 로직
+        switch icon {
+        case .auto:
+            if role == .back {
+                let backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil) ?? 
+                            UIImage(systemName: "chevron.left")
+                button.setImage(backImage, for: .normal)
+            } else {
+                button.setImage(UIImage(systemName: "xmark"), for: .normal)
+            }
+            button.tintColor = config.toolbarMode == "dark" ? .white : .black
+            
+        case .back:
+            let backImage = UIImage(named: "_ico", in: Bundle.module, compatibleWith: nil) ?? 
+                        UIImage(systemName: "chevron.left")
+            button.setImage(backImage, for: .normal)
+            button.tintColor = config.toolbarMode == "dark" ? .white : .black
+            
+        case .close:
+            button.setImage(UIImage(systemName: "xmark"), for: .normal)
+            button.tintColor = config.toolbarMode == "dark" ? .white : .black
+            
+        case .custom(let imageName):
+            let customImage = UIImage(named: imageName, in: Bundle.module, compatibleWith: nil) ??
+                            UIImage(named: imageName)
+            
+            if let image = customImage {
+                button.setImage(image.withRenderingMode(.alwaysOriginal), for: .normal)
+            } else {
+                setupButtonIcon(button, icon: .auto, role: role)
+            }
         }
     }
-}
 
     private func setupWebView() {
         if webView.url != nil {
@@ -2764,27 +2759,24 @@ extension WKWebView {
     }
 }
 
-extension Bundle {
-    static var resourceBundle: Bundle {
-        #if SWIFT_PACKAGE
-        // SPM 환경에서는 자동 생성된 Bundle.module 사용
-        return Bundle.module
-        #else
-        // 일반 프로젝트에서는 수동으로 번들 찾기
+private extension Bundle {
+    static var module: Bundle {
         let bundleName = "InAppBrowserSDK_InAppBrowserSDK"
         
+        // 메인 번들에서 찾기
         if let bundleURL = Bundle.main.url(forResource: bundleName, withExtension: "bundle"),
            let bundle = Bundle(url: bundleURL) {
             return bundle
         }
         
+        // 현재 클래스 번들에서 찾기
         let currentBundle = Bundle(for: InAppBrowserViewController.self)
         if let bundleURL = currentBundle.url(forResource: bundleName, withExtension: "bundle"),
            let bundle = Bundle(url: bundleURL) {
             return bundle
         }
         
+        // Fallback
         return currentBundle
-        #endif
     }
 }
