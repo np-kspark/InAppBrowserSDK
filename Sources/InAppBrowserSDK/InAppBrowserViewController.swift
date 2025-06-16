@@ -765,10 +765,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
         let img1 = UIImage(named: "_ico", in: Bundle.resourceBundle, compatibleWith: nil)
         
-        // 방법 2: 현재 번들
         let img2 = UIImage(named: "_ico", in: currentBundle, compatibleWith: nil)
         
-        // 방법 3: 기본
         let img3 = UIImage(named: "_ico")
         
         // 기존 로직
