@@ -14,11 +14,11 @@ public class InAppBrowserManager {
     }
     
     public func initialize(with config: InAppBrowserConfig) {
+        self.config = config
         if isInitialized {
             return
         }
         
-        self.config = config
     
     MobileAds.shared.start(completionHandler: nil)
     isInitialized = true
