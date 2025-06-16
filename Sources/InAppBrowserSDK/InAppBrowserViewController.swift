@@ -760,24 +760,30 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     private func setupButtonIcon(_ button: UIButton, icon: InAppBrowserConfig.ButtonIcon, role: InAppBrowserConfig.ButtonRole) {
         let customImageName = (role == .back) ? config.backButtonImageName : config.closeButtonImageName
-            
-            if let customImageName = customImageName, !customImageName.isEmpty {
-                if let customImage = UIImage(named: customImageName) {
-                    button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
-                    return
-                }
+        
+        let bundle = Bundle(for: InAppBrowserViewController.self)
+        let backImage = UIImage(named: "_ico", in: bundle, compatibleWith: nil) ?? UIImage(systemName: "chevron.left")
+        
+        
+        if let customImageName = customImageName, !customImageName.isEmpty {
+            if let customImage = UIImage(named: customImageName) {
+                button.setImage(customImage.withRenderingMode(.alwaysOriginal), for: .normal)
+                return
             }
+        }
+        
         switch icon {
         case .auto:
             if role == .back {
-                button.setImage(UIImage(named: "_ico"), for: .normal)
+                button.setImage(backImage, for: .normal)
+                
             } else {
                 button.setImage(UIImage(systemName: "xmark"), for: .normal)
             }
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .back:
-            button.setImage(UIImage(named: "_ico"), for: .normal)
+            button.setImage(backImage, for: .normal)
             button.tintColor = config.toolbarMode == "dark" ? .white : .black
             
         case .close:
