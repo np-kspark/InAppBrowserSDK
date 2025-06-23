@@ -7,27 +7,27 @@ import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
-    static func clearAllWebViewCache() {
-        
-        // WKWebsiteDataStore의 모든 데이터 정리
-        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
-        }
-        
-        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
-        
-        URLCache.shared.removeAllCachedResponses()
-        
-        let defaults = UserDefaults.standard
-        let webViewKeys = defaults.dictionaryRepresentation().keys.filter { key in
-            key.contains("WebKit") || key.contains("com.apple.WebKit")
-        }
-        
-        for key in webViewKeys {
-            defaults.removeObject(forKey: key)
-        }
-        defaults.synchronize()
-            }
+//    static func clearAllWebViewCache() {
+//        
+//        // WKWebsiteDataStore의 모든 데이터 정리
+//        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+//        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+//        }
+//        
+//        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
+//        
+//        URLCache.shared.removeAllCachedResponses()
+//        
+//        let defaults = UserDefaults.standard
+//        let webViewKeys = defaults.dictionaryRepresentation().keys.filter { key in
+//            key.contains("WebKit") || key.contains("com.apple.WebKit")
+//        }
+//        
+//        for key in webViewKeys {
+//            defaults.removeObject(forKey: key)
+//        }
+//        defaults.synchronize()
+//            }
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
@@ -86,12 +86,28 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+    private func syncCookiesFromHTTPCookieStorage() {
+        let cookies = HTTPCookieStorage.shared.cookies ?? []
+        
+        for cookie in cookies {
+            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) { }
+        }
+    }
+
+    private func syncCookiesToHTTPCookieStorage() {
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            for cookie in cookies {
+                HTTPCookieStorage.shared.setCookie(cookie)
+            }
+        }
+    }
     override func viewDidLoad() {
         super.viewDidLoad()
         setupMainLayout()
         setupWebView()
         setupJavaScriptInterface(for: self.webView)
+        
+        syncCookiesFromHTTPCookieStorage()
         
         NotificationCenter.default.addObserver(
             self,
@@ -99,6 +115,65 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             name: UIApplication.didBecomeActiveNotification,
             object:nil
         )
+    }
+    private func setupCookieSaveObservers() {
+   
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(saveCookiesOnBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(saveCookiesOnBackground),
+            name: UIApplication.willTerminateNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(saveCookiesOnBackground),
+            name: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil
+        )
+    }
+    public func saveCookiesToUserDefaults() {
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                // NSKeyedArchiver를 사용하여 쿠키 객체 직접 저장
+                do {
+                    let cookieData = try NSKeyedArchiver.archivedData(withRootObject: cookies, requiringSecureCoding: false)
+                    DispatchQueue.main.async {
+                        UserDefaults.standard.set(cookieData, forKey: "SavedWebViewCookies")
+                        UserDefaults.standard.synchronize()
+                    }
+                } catch {
+                }
+            }
+        }
+        
+        public func loadCookiesFromUserDefaults() {
+            guard let cookieData = UserDefaults.standard.data(forKey: "SavedWebViewCookies") else {
+                return
+            }
+            
+            do {
+                if let cookies = try NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(cookieData) as? [HTTPCookie] {
+                    for cookie in cookies {
+                        webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                        }
+                        
+                        HTTPCookieStorage.shared.setCookie(cookie)
+                    }
+                }
+            } catch {
+            }
+        }
+        
+    
+    @objc private func saveCookiesOnBackground() {
+        saveCookiesToUserDefaults()
     }
     
     @objc private func appDidBecomeActive() {
@@ -123,15 +198,16 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             
+            /*
             let dataStore = webView.configuration.websiteDataStore
             let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
             dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
+            */
         }
         
         if let presentedAlert = presentedViewController as? UIAlertController {
             presentedAlert.dismiss(animated: false, completion: nil)
         }
-        
     }
     
     public func closeWebView(){
@@ -142,7 +218,11 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
                 presentedAlert.dismiss(animated: false, completion: nil)
             }
             
-            self.clearWebViewData()
+            if !self.config.preventCache {
+                self.syncCookiesToHTTPCookieStorage()
+            } else {
+                self.clearWebViewData()
+            }
             
             InAppBrowserManager.shared.notifyBrowserClosed()
             self.dismiss(animated: true) { [weak self] in
@@ -164,19 +244,16 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private func clearWebViewData() {
         // 웹뷰 로딩 중지
         webView.stopLoading()
-        
-        // 캐시와 쿠키 정리
-        let dataStore = webView.configuration.websiteDataStore
-        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        
-        dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+        if config.preventCache {
+            let dataStore = webView.configuration.websiteDataStore
+            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+            
+            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+            }
+            
+            HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
+            URLCache.shared.removeAllCachedResponses()
         }
-        
-        // HTTP 쿠키 정리
-        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
-        
-        // URL 캐시 정리
-        URLCache.shared.removeAllCachedResponses()
         
         // 네비게이션 히스토리 초기화
         navigationHistory.removeAll()
@@ -327,7 +404,12 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     }
     private func createEnhancedWebViewConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
+        
+        let sharedProcessPool = WKProcessPool()
+        config.processPool = sharedProcessPool
+        
         let userContentController = WKUserContentController()
+        
         
         let cookieStorage = HTTPCookieStorage.shared
         cookieStorage.cookieAcceptPolicy = .always
@@ -534,14 +616,27 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             config.websiteDataStore = dataStore
         } else {
             let dataStore = WKWebsiteDataStore.default()
-            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
             config.websiteDataStore = dataStore
+//            let dataStore = WKWebsiteDataStore.default()
+//            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+//            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
+//            config.websiteDataStore = dataStore
         }
         
         config.applicationNameForUserAgent = "KakaoTalkSharing"
         
         return config
+    }
+    public func showLoadingCoverFromWeb() {
+        DispatchQueue.main.async { [weak self] in
+            self?.showLoadingCover()
+        }
+    }
+
+    public func hideLoadingCoverFromWeb() {
+        DispatchQueue.main.async { [weak self] in
+            self?.hideLoadingCover()
+        }
     }
     private func createToolbar() -> UIView {
         let toolbar = UIView()
@@ -805,11 +900,11 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private func setupWebView() {
         if webView.url != nil {
             webView.stopLoading()
-            
-            // 기존 데이터 정리
-            let dataStore = webView.configuration.websiteDataStore
-            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
+            if config.preventCache {
+                // 기존 데이터 정리
+                let dataStore = webView.configuration.websiteDataStore
+                let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+                dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {}
             }
         }
         
@@ -817,22 +912,26 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             let finalUrl = config.preventCache ? addCacheBusterToUrl(urlString) : urlString
             let optimizedUrlString = optimizeURL(finalUrl)
             
-            
             if let url = URL(string: optimizedUrlString) {
                 // 캐시 방지 설정
-                if config.preventCache {
-                    let dataStore = WKWebsiteDataStore.nonPersistent()
-                    webView.configuration.websiteDataStore = dataStore
-                }
+//                if config.preventCache {
+//                    let dataStore = WKWebsiteDataStore.nonPersistent()
+//                    webView.configuration.websiteDataStore = dataStore
+//                    
+//                }
                 
                 var request = URLRequest(url: url)
                 
                 if config.preventCache {
+                    // 캐시 방지가 true일 때만 캐시 관련 헤더 설정
                     request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
                     request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
                     request.setValue("no-cache", forHTTPHeaderField: "Pragma")
                     request.setValue("0", forHTTPHeaderField: "Expires")
                     request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
+                } else {
+                    // 쿠키 유지를 위한 기본 캐시 정책
+                    request.cachePolicy = .useProtocolCachePolicy
                 }
                 
                 request.httpShouldHandleCookies = true
@@ -1251,7 +1350,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
     
-    private func showLoadingCover() {
+    public func showLoadingCover() {
         loadingCover.isHidden = false
         
         if let activityIndicator = loadingIndicator as? UIActivityIndicatorView {
@@ -1259,7 +1358,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
     
-    private func hideLoadingCover() {
+    public func hideLoadingCover() {
         loadingCover.isHidden = true
         
         if let activityIndicator = loadingIndicator as? UIActivityIndicatorView {
@@ -1509,8 +1608,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         let newDomain = newParts.suffix(2).joined(separator: ".")
         
         let isSameBaseDomain = currentDomain == newDomain
-        
-        
         
         return isSameBaseDomain
     }

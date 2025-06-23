@@ -58,7 +58,7 @@ public class InAppBrowserConfig {
     var allowImageDrag: Bool = false
     var allowImageSelect: Bool = false
 
-    var preventCache: Bool = true
+    var preventCache: Bool = false
     
     public enum ButtonRole {
         case back

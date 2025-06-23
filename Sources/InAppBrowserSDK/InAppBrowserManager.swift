@@ -14,14 +14,17 @@ public class InAppBrowserManager {
     }
     
     public func initialize(with config: InAppBrowserConfig) {
+        
         self.config = config
         if isInitialized {
             return
         }
         
-    
-    MobileAds.shared.start(completionHandler: nil)
-    isInitialized = true
+        let cookieStorage = HTTPCookieStorage.shared
+        cookieStorage.cookieAcceptPolicy = .always
+        
+        MobileAds.shared.start(completionHandler: nil)
+        isInitialized = true
     }
     
     public func launch(from viewController: UIViewController) {

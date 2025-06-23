@@ -116,6 +116,17 @@ extension InAppBrowserViewController {
                         timeout: timeout
                     });
                 },
+                showLoadingCover: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'showLoadingCover'
+                    });
+                },
+                        
+                hideLoadingCover: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'hideLoadingCover'
+                    });
+                },
                            
                 triggerBackAction: function() {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
@@ -124,7 +135,6 @@ extension InAppBrowserViewController {
                 }
             };
             
-            window.AndroidInterface = window.iOSInterface;
         """
         
         let kakaoEnhancementScript = """
