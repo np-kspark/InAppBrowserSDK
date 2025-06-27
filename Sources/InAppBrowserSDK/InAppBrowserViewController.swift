@@ -268,41 +268,40 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private func applyImageControlSettings() {
         let imageControlScript = """
         (function() {
-            const allowSave = \(config.allowImageSave ? "true" : "false");
-            const allowZoom = \(config.allowImageZoom ? "true" : "false");
-            const allowDrag = \(config.allowImageDrag ? "true" : "false");
-            const allowSelect = \(config.allowImageSelect ? "true" : "false");
-            
-            
-            const images = document.querySelectorAll('img');
-            images.forEach(function(img) {
-                if (!allowSave) {
-                    img.style.webkitTouchCallout = 'none';
-                    img.addEventListener('contextmenu', function(e) {
-                        e.preventDefault();
-                    }, true);
-                }
-                
-                if (!allowDrag) {
-                    img.style.webkitUserDrag = 'none';
-                    img.draggable = false;
-                }
-                
-                if (!allowSelect) {
-                    img.style.webkitUserSelect = 'none';
-                    img.style.userSelect = 'none';
-                }
-            });
-            
-            if (!allowZoom) {
-                document.addEventListener('gesturestart', function(e) {
-                    e.preventDefault();
-                }, false);
-                
-                document.addEventListener('gesturechange', function(e) {
-                    e.preventDefault();
-                }, false);
-            }
+           var allowSave = \(config.allowImageSave ? "true" : "false");
+           var allowZoom = \(config.allowImageZoom ? "true" : "false");
+           var allowDrag = \(config.allowImageDrag ? "true" : "false");
+           var allowSelect = \(config.allowImageSelect ? "true" : "false");
+           
+           var images = document.querySelectorAll('img');
+           images.forEach(function(img) {
+               if (!allowSave) {
+                   img.style.webkitTouchCallout = 'none';
+                   img.addEventListener('contextmenu', function(e) {
+                       e.preventDefault();
+                   }, true);
+               }
+               
+               if (!allowDrag) {
+                   img.style.webkitUserDrag = 'none';
+                   img.draggable = false;
+               }
+               
+               if (!allowSelect) {
+                   img.style.webkitUserSelect = 'none';
+                   img.style.userSelect = 'none';
+               }
+           });
+           
+           if (!allowZoom) {
+               document.addEventListener('gesturestart', function(e) {
+                   e.preventDefault();
+               }, false);
+               
+               document.addEventListener('gesturechange', function(e) {
+                   e.preventDefault();
+               }, false);
+           }
         })();
         """
         
@@ -434,173 +433,156 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             config.mediaPlaybackRequiresUserAction = false
             config.preferences.javaScriptEnabled = true
         }
-        
         let imageControlScript = """
         (function() {
-            
-            // 1. 이미지 컨텍스트 메뉴 비활성화 (길게 누르기 방지)
-            document.addEventListener('contextmenu', function(e) {
-                if (e.target.tagName === 'IMG') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return false;
-                }
-            }, true);
-            
-            // 2. 이미지 드래그 방지
-            document.addEventListener('dragstart', function(e) {
-                if (e.target.tagName === 'IMG') {
-                    e.preventDefault();
-                    return false;
-                }
-            }, true);
-            
-            // 3. 이미지 선택 방지
-            document.addEventListener('selectstart', function(e) {
-                if (e.target.tagName === 'IMG') {
-                    e.preventDefault();
-                    return false;
-                }
-            }, true);
-            
-            // 4. 모든 이미지에 터치 이벤트 제어 적용
-            function disableImageInteractions() {
-                const images = document.querySelectorAll('img');
-                
-                images.forEach(function(img, index) {
-                    if (img.dataset.protected) return; 
-                    
-                    img.dataset.protected = 'true';
-                    
-                    // CSS 스타일 강제 적용
-                    img.style.webkitUserSelect = 'none';
-                    img.style.userSelect = 'none';
-                    img.style.webkitTouchCallout = 'none';
-                    img.style.webkitUserDrag = 'none';
-                    img.style.pointerEvents = 'none';
-                    
-                    // 터치 이벤트 차단
-                    img.addEventListener('touchstart', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, { passive: false, capture: true });
-                    
-                    img.addEventListener('touchend', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, { passive: false, capture: true });
-                    
-                    img.addEventListener('touchmove', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, { passive: false, capture: true });
-                    
-                    // 클릭 이벤트 차단
-                    img.addEventListener('click', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, true);
-                    
-                    // 더블클릭 차단 (줌 방지)
-                    img.addEventListener('dblclick', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, true);
-                    
-                    // 마우스 이벤트 차단
-                    img.addEventListener('mousedown', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, true);
-                    
-                    img.addEventListener('mouseup', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, true);
-                });
-            }
-            
-            // 5. CSS 스타일로 추가 보호
-            const style = document.createElement('style');
-            style.innerHTML = \'
-                img {
-                    -webkit-user-select: none !important;
-                    -moz-user-select: none !important;
-                    -ms-user-select: none !important;
-                    user-select: none !important;
-                    -webkit-user-drag: none !important;
-                    -webkit-touch-callout: none !important;
-                    -webkit-tap-highlight-color: transparent !important;
-                    pointer-events: none !important;
-                    touch-action: none !important;
-                }
-                
-                /* 이미지 컨테이너도 보호 */
-                .image-container, .photo-container, .img-container {
-                    -webkit-user-select: none !important;
-                    user-select: none !important;
-                    -webkit-touch-callout: none !important;
-                }
-                
-                /* 특정 클래스 이미지들 추가 보호 */
-                img[src*=".jpg"], 
-                img[src*=".jpeg"], 
-                img[src*=".png"], 
-                img[src*=".gif"], 
-                img[src*=".webp"] {
-                    -webkit-user-select: none !important;
-                    user-select: none !important;
-                    -webkit-touch-callout: none !important;
-                    pointer-events: none !important;
-                    -webkit-user-drag: none !important;
-                }
-            \';
-            document.head.appendChild(style);
-            
-            // 6. 초기 실행 및 DOM 변경 감지
-            function initImageProtection() {
-                disableImageInteractions();
-                
-                // DOM 변경 감지하여 새로운 이미지들에도 적용
-                const observer = new MutationObserver(function(mutations) {
-                    let hasNewImages = false;
-                    
-                    mutations.forEach(function(mutation) {
-                        if (mutation.type === 'childList') {
-                            mutation.addedNodes.forEach(function(node) {
-                                if (node.nodeType === 1) { // Element node
-                                    if (node.tagName === 'IMG' || node.querySelector && node.querySelector('img')) {
-                                        hasNewImages = true;
-                                    }
-                                }
-                            });
-                        }
-                    });
-                    
-                    if (hasNewImages) {
-                        setTimeout(disableImageInteractions, 100);
-                    }
-                });
-                
-                if (document.body) {
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: true
-                    });
-                }
-            }
-            
-            // 7. 실행
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initImageProtection);
-            } else {
-                initImageProtection();
-            }
-            
-            window.addEventListener('load', function() {
-                setTimeout(disableImageInteractions, 500);
-            });
-            
+           
+           document.addEventListener('contextmenu', function(e) {
+               if (e.target.tagName === 'IMG') {
+                   e.preventDefault();
+                   e.stopPropagation();
+                   return false;
+               }
+           }, true);
+           
+           document.addEventListener('dragstart', function(e) {
+               if (e.target.tagName === 'IMG') {
+                   e.preventDefault();
+                   return false;
+               }
+           }, true);
+           
+           document.addEventListener('selectstart', function(e) {
+               if (e.target.tagName === 'IMG') {
+                   e.preventDefault();
+                   return false;
+               }
+           }, true);
+           
+           function disableImageInteractions() {
+               var images = document.querySelectorAll('img');
+               
+               images.forEach(function(img, index) {
+                   if (img.dataset.protected) return; 
+                   
+                   img.dataset.protected = 'true';
+                   
+                   img.style.webkitUserSelect = 'none';
+                   img.style.userSelect = 'none';
+                   img.style.webkitTouchCallout = 'none';
+                   img.style.webkitUserDrag = 'none';
+                   img.style.pointerEvents = 'none';
+                   
+                   img.addEventListener('touchstart', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, { passive: false, capture: true });
+                   
+                   img.addEventListener('touchend', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, { passive: false, capture: true });
+                   
+                   img.addEventListener('touchmove', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, { passive: false, capture: true });
+                   
+                   img.addEventListener('click', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, true);
+                   
+                   img.addEventListener('dblclick', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, true);
+                   
+                   img.addEventListener('mousedown', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, true);
+                   
+                   img.addEventListener('mouseup', function(e) {
+                       e.preventDefault();
+                       e.stopPropagation();
+                   }, true);
+               });
+           }
+           
+           var style = document.createElement('style');
+           style.innerHTML = 
+               'img {' +
+               '    -webkit-user-select: none !important;' +
+               '    -moz-user-select: none !important;' +
+               '    -ms-user-select: none !important;' +
+               '    user-select: none !important;' +
+               '    -webkit-user-drag: none !important;' +
+               '    -webkit-touch-callout: none !important;' +
+               '    -webkit-tap-highlight-color: transparent !important;' +
+               '    pointer-events: none !important;' +
+               '    touch-action: none !important;' +
+               '}' +
+               '' +
+               '.image-container, .photo-container, .img-container {' +
+               '    -webkit-user-select: none !important;' +
+               '    user-select: none !important;' +
+               '    -webkit-touch-callout: none !important;' +
+               '}' +
+               '' +
+               'img[src*=".jpg"], ' +
+               'img[src*=".jpeg"], ' +
+               'img[src*=".png"], ' +
+               'img[src*=".gif"], ' +
+               'img[src*=".webp"] {' +
+               '    -webkit-user-select: none !important;' +
+               '    user-select: none !important;' +
+               '    -webkit-touch-callout: none !important;' +
+               '    pointer-events: none !important;' +
+               '    -webkit-user-drag: none !important;' +
+               '}';
+           document.head.appendChild(style);
+           
+           function initImageProtection() {
+               disableImageInteractions();
+               
+               var observer = new MutationObserver(function(mutations) {
+                   var hasNewImages = false;
+                   
+                   mutations.forEach(function(mutation) {
+                       if (mutation.type === 'childList') {
+                           mutation.addedNodes.forEach(function(node) {
+                               if (node.nodeType === 1) {
+                                   if (node.tagName === 'IMG' || (node.querySelector && node.querySelector('img'))) {
+                                       hasNewImages = true;
+                                   }
+                               }
+                           });
+                       }
+                   });
+                   
+                   if (hasNewImages) {
+                       setTimeout(disableImageInteractions, 100);
+                   }
+               });
+               
+               if (document.body) {
+                   observer.observe(document.body, {
+                       childList: true,
+                       subtree: true
+                   });
+               }
+           }
+           
+           if (document.readyState === 'loading') {
+               document.addEventListener('DOMContentLoaded', initImageProtection);
+           } else {
+               initImageProtection();
+           }
+           
+           window.addEventListener('load', function() {
+               setTimeout(disableImageInteractions, 500);
+           });
+           
         })();
         """
         
