@@ -5,16 +5,19 @@ extension WKWebView {
         DispatchQueue.main.async {
             self.evaluateJavaScript(script) { (result, error) in
                 if let error = error {
+                    print("JavaScript Error: \(error)")
                 }
             }
         }
     }
 }
-
+// JavaScript Interface Helper
 extension InAppBrowserViewController {
     func setupJavaScriptInterface(for webView: WKWebView) {
+        // 기본 인터페이스는 그대로 유지
         let basicScript = """
             window.iOSInterface = {
+                // 보상형 광고 트리거
                 triggerAd: function(adUnit, callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'reward',
@@ -22,13 +25,8 @@ extension InAppBrowserViewController {
                         callbackFunction: callbackFunction
                     });
                 },
-                openExternalURL: function(url) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'openExternalURL',
-                        url: url
-                    });
-                },
-
+                
+                // 전면 광고 트리거
                 triggerinterstitialAd: function(adUnit, callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'interstitial',
@@ -37,6 +35,7 @@ extension InAppBrowserViewController {
                     });
                 },
                 
+                // 보상형 전면 광고 트리거
                 triggerRewardedInterstitialAd: function(adUnit, callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'rewarded_interstitial',
@@ -45,6 +44,7 @@ extension InAppBrowserViewController {
                     });
                 },
                 
+                // 자동 표시 보상형 전면 광고
                 preloadAndAutoShowAd: function(adUnit, delayMs, callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'rewarded_interstitial',
@@ -55,12 +55,14 @@ extension InAppBrowserViewController {
                     });
                 },
                     
+                // 웹뷰 닫기 기능 추가
                 closeWebView: function() {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'close'
                     });
                 },
                 
+                // 광고 ID 수집 동의 요청
                 requestAdIdConsent: function(callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'requestAdIdConsent',
@@ -68,6 +70,7 @@ extension InAppBrowserViewController {
                     });
                 },
                 
+                // 광고 ID 수집 동의 상태 확인
                 checkAdIdConsentStatus: function(callbackFunction) {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'checkAdIdConsentStatus',
@@ -75,291 +78,107 @@ extension InAppBrowserViewController {
                     });
                 },
                 
-                requestATTPermission: function(callbackFunction) {
+                // 광고 ID 수집 동의 초기화 (재요청용)
+                requestAdidConsentAgain: function() {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'requestATTPermission',
-                        callbackFunction: callbackFunction
-                    });
-                },
-                
-                getATTStatus: function(callbackFunction) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'getATTStatus',
-                        callbackFunction: callbackFunction
-                    });
-                },
-                
-                getAdvertisingId: function(callbackFunction) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'getAdvertisingId',
-                        callbackFunction: callbackFunction
-                    });
-                },
-                
-                setBackAction: function(action) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'setBackAction',
-                        action: action
-                    });
-                },
-                
-                setBackConfirmMessage: function(message) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'setBackConfirmMessage',
-                        message: message
-                    });
-                },
-                
-                setBackConfirmTimeout: function(timeout) {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'setBackConfirmTimeout',
-                        timeout: timeout
-                    });
-                },
-                showLoadingCover: function() {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'showLoadingCover'
-                    });
-                },
-                        
-                hideLoadingCover: function() {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'hideLoadingCover'
-                    });
-                },
-                           
-                triggerBackAction: function() {
-                    window.webkit.messageHandlers.iOSInterface.postMessage({
-                        type: 'triggerBackAction'
+                        type: 'requestAdidConsentAgain'
                     });
                 }
             };
             
+            // Android 인터페이스와의 호환성을 위한 별칭
+            window.AndroidInterface = window.iOSInterface;
         """
         
-        let kakaoEnhancementScript = """
+        // DOM 스토리지 활성화를 위한 별도의 스크립트
+        let storageScript = """
             (function() {
-                window.enhanceKakaoShare = function() {
-                    if (typeof Kakao !== 'undefined' && Kakao.Share) {
-                        const originalSendDefault = Kakao.Share.sendDefault;
-                        const originalSendScrap = Kakao.Share.sendScrap;
-                        
-                        Kakao.Share.sendDefault = function(options) {
-                            try {
-                                return originalSendDefault.call(this, options);
-                            } catch(e) {
-                                
-                                const shareData = {
-                                    objectType: options.objectType || 'feed',
-                                    content: options.content || {},
-                                    buttons: options.buttons || []
-                                };
-                                
-                                const kakaoLink = 'kakaolink://send?template_json=' + 
-                                    encodeURIComponent(JSON.stringify(shareData));
-                                
-                                const tempLink = document.createElement('a');
-                                tempLink.href = kakaoLink;
-                                tempLink.click();
-                                
-                                setTimeout(function() {
-                                    if (confirm('카카오톡이 설치되어 있지 않습니다. 설치하시겠습니까?')) {
-                                        window.open('https://apps.apple.com/app/id362057947', '_blank');
-                                    }
-                                }, 1000);
-                            }
+                // DOM 스토리지 초기화 테스트
+                try {
+                    localStorage.setItem('test-storage', 'enabled');
+                    console.log('localStorage 테스트: ' + localStorage.getItem('test-storage'));
+                    
+                    // 브라우저 콘솔에서 확인할 수 있는 테스트 함수 추가
+                    window.checkStorage = function() {
+                        return {
+                            localStorage: localStorage.getItem('test-storage'),
+                            storageAvailable: typeof localStorage !== 'undefined'
                         };
-                        
-                        if (originalSendScrap) {
-                            Kakao.Share.sendScrap = function(options) {
-                                try {
-                                    return originalSendScrap.call(this, options);
-                                } catch(e) {
-                                    Kakao.Share.sendDefault({
-                                        objectType: 'feed',
-                                        content: {
-                                            title: options.requestUrl ? '페이지 공유' : '링크 공유',
-                                            description: '공유된 링크를 확인해보세요',
-                                            imageUrl: '',
-                                            link: {
-                                                mobileWebUrl: options.requestUrl || window.location.href,
-                                                webUrl: options.requestUrl || window.location.href
-                                            }
-                                        }
-                                    });
-                                }
-                            };
-                        }
-                        
-                        return true;
-                    }
-                    return false;
-                };
-                
-                let kakaoCheckCount = 0;
-                const kakaoChecker = setInterval(function() {
-                    kakaoCheckCount++;
-                    
-                    if (typeof Kakao !== 'undefined') {
-                        window.enhanceKakaoShare();
-                        clearInterval(kakaoChecker);
-                    } else if (kakaoCheckCount > 50) { 
-                        clearInterval(kakaoChecker);
-                    }
-                }, 100);
-                
-                window.checkKakaoTalkInstalled = function() {
-                    return new Promise(function(resolve) {
-                        const iframe = document.createElement('iframe');
-                        iframe.style.display = 'none';
-                        iframe.src = 'kakaotalk://';
-                        document.body.appendChild(iframe);
-                        
-                        const timeout = setTimeout(function() {
-                            document.body.removeChild(iframe);
-                            resolve(false); 
-                        }, 2000);
-                        
-                        window.addEventListener('blur', function() {
-                            clearTimeout(timeout);
-                            document.body.removeChild(iframe);
-                            resolve(true); 
-                        }, { once: true });
-                    });
-                };
+                    };
+                } catch(e) {
+                    console.error('localStorage 오류: ' + e);
+                }
             })();
         """
         
-        let urlOptimizationScript = """
-            (function() {
-                // URL 길이 체크 및 최적화
-                window.optimizeCurrentUrl = function() {
-                    const currentUrl = window.location.href;
-                    
-                    if (currentUrl.length > 2000) {
-                        
-                        if (currentUrl.includes('coupang.com')) {
-                            const url = new URL(currentUrl);
-                            const params = new URLSearchParams(url.search);
-                            
-                            const essentialParams = ['itemId', 'vendorItemId'];
-                            const newParams = new URLSearchParams();
-                            
-                            essentialParams.forEach(function(param) {
-                                if (params.has(param)) {
-                                    newParams.set(param, params.get(param));
-                                }
-                            });
-                            
-                            const optimizedUrl = url.origin + url.pathname + '?' + newParams.toString();
-                            
-                            return optimizedUrl;
-                        }
-                    }
-                    
-                    return currentUrl;
-                };
-                
-                window.addEventListener('error', function(e) {
-                    
-                    if (e.message && e.message.includes('URL')) {
-                        const optimizedUrl = window.optimizeCurrentUrl();
-                        if (optimizedUrl !== window.location.href) {
-                            window.location.href = optimizedUrl;
-                        }
-                    }
-                });
-                
-                window.addEventListener('unhandledrejection', function(e) {
-                    
-                    if (e.reason && e.reason.toString().includes('network')) {
-                    }
-                });
-                
-            })();
-        """
-        let windowOpenScript = """
-        (function() {
-            const originalOpen = window.open;
-            
-            window.open = function(url, name, features) {
-                try {
-                    
-                    if (!url || url === '' || url === 'about:blank') {
-                        return originalOpen.call(this, url, name, features);
-                    }
-                    
-                    let fullUrl = url;
-                    if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('javascript:')) {
-                        const baseUrl = window.location.origin;
-                        if (url.startsWith('/')) {
-                            fullUrl = baseUrl + url;
-                        } else {
-                            const currentPath = window.location.pathname;
-                            const basePath = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
-                            fullUrl = baseUrl + basePath + url;
-                        }
-                    }
-                    
-                    
-                    return originalOpen.call(this, fullUrl, name, features);
-                    
-                } catch (e) {
-                    return originalOpen.call(this, url, name, features);
-                }
-            };
-            
-            
-            window.checkPopupBlocked = function() {
-                try {
-                    const popup = window.open('about:blank', '_blank', 'width=1,height=1');
-                    if (popup) {
-                        popup.close();
-                        return false;
-                    } else {
-                        return true; 
-                    }
-                } catch (e) {
-                    return true;
-                }
-            };
-            
-        })();
-        """
+        // 기본 인터페이스 스크립트 추가
+        let userScript = WKUserScript(
+            source: basicScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        webView.configuration.userContentController.addUserScript(userScript)
         
-        let postLoadScript = """
-        (function() {
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', function() {
-                });
-            } else {
-            }
-            
-            document.addEventListener('click', function(e) {
-                const target = e.target;
-                if (target.onclick && target.onclick.toString().includes('window.open')) {
-                    
-                }
-            });
-        })();
-        """
-        
-        let scripts = [
-            (basicScript, WKUserScriptInjectionTime.atDocumentStart, true),
-            (windowOpenScript, WKUserScriptInjectionTime.atDocumentStart, false),
-            (kakaoEnhancementScript, WKUserScriptInjectionTime.atDocumentEnd, false),
-            (urlOptimizationScript, WKUserScriptInjectionTime.atDocumentEnd, true),
-            (postLoadScript, WKUserScriptInjectionTime.atDocumentEnd, false)
-        ]
-        
-        for (script, time, mainFrameOnly) in scripts {
-            let userScript = WKUserScript(
-                source: script,
-                injectionTime: time,
-                forMainFrameOnly: mainFrameOnly
-            )
-            webView.configuration.userContentController.addUserScript(userScript)
-        }
+        // 스토리지 스크립트 추가
+        let storageUserScript = WKUserScript(
+            source: storageScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        )
+        webView.configuration.userContentController.addUserScript(storageUserScript)
     }
     
+    // WebView 설정을 최적화하는 함수 추가
+    func enhanceWebViewConfiguration(_ webView: WKWebView) {
+        // 1. 쿠키 수락 정책 설정
+        HTTPCookieStorage.shared.cookieAcceptPolicy = .always
+        
+        // 2. DOM 스토리지가 활성화되었는지 테스트
+        let testStorageScript = """
+        (function() {
+            try {
+                localStorage.setItem('test-key', 'test-value');
+                var result = localStorage.getItem('test-key');
+                return { success: result === 'test-value', value: result };
+            } catch(e) {
+                return { success: false, error: e.toString() };
+            }
+        })();
+        """
+        
+        webView.evaluateJavaScript(testStorageScript) { (result, error) in
+            if let resultDict = result as? [String: Any], let success = resultDict["success"] as? Bool {
+                print("DOM 스토리지 테스트: \(success ? "성공" : "실패")")
+            } else if let error = error {
+                print("DOM 스토리지 테스트 오류: \(error.localizedDescription)")
+            }
+        }
+        
+        // 3. 서드파티 도메인에 대한 테스트 쿠키 설정
+        setupTestCookiesForThirdPartyDomains(webView)
+    }
+    
+    // 테스트용 서드파티 쿠키 설정
+    private func setupTestCookiesForThirdPartyDomains(_ webView: WKWebView) {
+        let thirdPartyDomains = [
+            "doubleclick.net",
+            "google-analytics.com",
+            "facebook.com", 
+            "adservice.google.com"
+        ]
+        
+        for domain in thirdPartyDomains {
+            if let cookie = HTTPCookie(properties: [
+                .domain: domain,
+                .path: "/",
+                .name: "pre-visit-cookie",
+                .value: "enabled",
+                .secure: true,
+                .expires: NSDate(timeIntervalSinceNow: 86400) // 1일
+            ]) {
+                webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+            }
+        }
+    }
 }
+

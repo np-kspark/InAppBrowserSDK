@@ -51,7 +51,6 @@ public class InAppBrowserManager {
     }
 
     private func launchNewBrowser(from viewController: UIViewController, url: String, config: InAppBrowserConfig) {
-        // 새 설정 객체 생성
         let newConfig = InAppBrowserConfig.Builder()
             .setToolbarMode(config.toolbarMode)
             .setToolbarTitle(config.toolbarTitle)

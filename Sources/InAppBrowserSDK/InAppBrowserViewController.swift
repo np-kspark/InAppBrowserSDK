@@ -6,28 +6,7 @@ import AdSupport
 import Foundation
 
 class InAppBrowserViewController: UIViewController, WKUIDelegate {
-    
-//    static func clearAllWebViewCache() {
-//        
-//        // WKWebsiteDataStore의 모든 데이터 정리
-//        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-//        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {
-//        }
-//        
-//        HTTPCookieStorage.shared.removeCookies(since: Date(timeIntervalSince1970: 0))
-//        
-//        URLCache.shared.removeAllCachedResponses()
-//        
-//        let defaults = UserDefaults.standard
-//        let webViewKeys = defaults.dictionaryRepresentation().keys.filter { key in
-//            key.contains("WebKit") || key.contains("com.apple.WebKit")
-//        }
-//        
-//        for key in webViewKeys {
-//            defaults.removeObject(forKey: key)
-//        }
-//        defaults.synchronize()
-//            }
+    static let SDK_VERSION = "1.1.9"
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
@@ -42,7 +21,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     private var config: InAppBrowserConfig
     
-    private let adLoadTimeoutInterval: TimeInterval = 7.0
+    private var adLoadTimeoutInterval: TimeInterval = 5.0
     private var adLoadTimer: Timer?
     private var adLoadTimeoutWorkItem: DispatchWorkItem?
     private var isAdRequestTimeOut: Bool = false
@@ -52,11 +31,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private var lastCallAdUnit: String = ""
     private var callBackAdUnit: String = ""
     
-    // URL 최적화를 위한 추가 속성
     private var originalURL: String?
     private var optimizedURL: String?
     
-    // 백 액션 제어를 위한 추가 속성
     private var lastBackPressed: TimeInterval = 0
     private var currentBackAction: InAppBrowserConfig.BackAction = .historyBack
     private var backConfirmMessage: String = "한번 더 누르면 창이 닫힙니다"
@@ -72,6 +49,30 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private var lastBackActionTime: TimeInterval = 0
     private var lastBackActionURL: String = ""
     
+    private var preloadedRewardedAd: RewardedAd?
+    private var preloadedInterstitialAd: InterstitialAd?
+    private var preloadedRewardedInterstitialAd: RewardedInterstitialAd?
+
+    private var preloadedRewardedAdUnit: String?
+    private var preloadedInterstitialAdUnit: String?
+    private var preloadedRewardedInterstitialAdUnit: String?
+
+    private var isPreloadingRewardedAd: Bool = false
+    private var isPreloadingInterstitialAd: Bool = false
+    private var isPreloadingRewardedInterstitialAd: Bool = false
+
+    private var isPreloadedRewardEarned: Bool = false
+    private var preloadedPendingCallbackFunction: String?
+
+    private var preloadTimeoutMs: Int = 5000
+    private var isLoadingCoverEnabled: Bool = false
+    
+    private var isUsingUnifiedCallback: Bool = false
+    private var currentCallbackType: String = "legacy"
+    
+
+    private var initialDomain: String?
+    private var currentRootDomain: String?
     init(config: InAppBrowserConfig) {
         self.config = config
         self.currentBackAction = config.backAction
@@ -141,7 +142,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     }
     public func saveCookiesToUserDefaults() {
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                // NSKeyedArchiver를 사용하여 쿠키 객체 직접 저장
                 do {
                     let cookieData = try NSKeyedArchiver.archivedData(withRootObject: cookies, requiringSecureCoding: false)
                     DispatchQueue.main.async {
@@ -210,6 +210,44 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
     
+    func isPreloadedAdAvailable(adType: String) -> Bool {
+        switch adType.lowercased() {
+        case "rewarded":
+            return preloadedRewardedAd != nil
+        case "interstitial":
+            return preloadedInterstitialAd != nil
+        case "rewarded_interstitial":
+            return preloadedRewardedInterstitialAd != nil
+        default:
+            return false
+        }
+    }
+    public func clearPreloadedAd(_ adType: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            switch adType.lowercased() {
+            case "rewarded":
+                self.preloadedRewardedAd = nil
+                self.preloadedRewardedAdUnit = nil
+            case "interstitial":
+                self.preloadedInterstitialAd = nil
+                self.preloadedInterstitialAdUnit = nil
+            case "rewarded_interstitial":
+                self.preloadedRewardedInterstitialAd = nil
+                self.preloadedRewardedInterstitialAdUnit = nil
+            case "all":
+                self.preloadedRewardedAd = nil
+                self.preloadedRewardedAdUnit = nil
+                self.preloadedInterstitialAd = nil
+                self.preloadedInterstitialAdUnit = nil
+                self.preloadedRewardedInterstitialAd = nil
+                self.preloadedRewardedInterstitialAdUnit = nil
+            default:
+                break
+            }
+        }
+    }
     public func closeWebView(){
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -242,7 +280,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     }
     
     private func clearWebViewData() {
-        // 웹뷰 로딩 중지
         webView.stopLoading()
         if config.preventCache {
             let dataStore = webView.configuration.websiteDataStore
@@ -255,11 +292,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             URLCache.shared.removeAllCachedResponses()
         }
         
-        // 네비게이션 히스토리 초기화
         navigationHistory.removeAll()
         isNavigatingBack = false
         
-        // 백 액션 관련 변수 초기화
         backActionCount = 0
         lastBackActionURL = ""
         lastBackActionTime = 0
@@ -368,11 +403,11 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
         for gestureRecognizer in webView.gestureRecognizers ?? [] {
             if gestureRecognizer is UITapGestureRecognizer {
-                gestureRecognizer.isEnabled = true // 탭은 허용 (링크 클릭 등)
+                gestureRecognizer.isEnabled = true
             } else if gestureRecognizer is UIPinchGestureRecognizer {
-                gestureRecognizer.isEnabled = false // 핀치 줌 완전 차단
+                gestureRecognizer.isEnabled = false
             } else if gestureRecognizer is UILongPressGestureRecognizer {
-                gestureRecognizer.isEnabled = false // 길게 누르기 차단
+                gestureRecognizer.isEnabled = false
             }
         }
         
@@ -599,10 +634,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         } else {
             let dataStore = WKWebsiteDataStore.default()
             config.websiteDataStore = dataStore
-//            let dataStore = WKWebsiteDataStore.default()
-//            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-//            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
-//            config.websiteDataStore = dataStore
         }
         
         config.applicationNameForUserAgent = "KakaoTalkSharing"
@@ -630,7 +661,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             toolbar.backgroundColor = config.toolbarMode == "dark" ? .black : .white
         }
         
-        // 왼쪽 버튼 (leftButtonRole에 따라)
         let leftButton = UIButton(type: .system)
         leftButton.translatesAutoresizingMaskIntoConstraints = false
         leftButton.tag = 100
@@ -846,7 +876,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         
         let img3 = UIImage(named: "_ico")
         
-        // 기존 로직
         switch icon {
         case .auto:
             if role == .back {
@@ -883,7 +912,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         if webView.url != nil {
             webView.stopLoading()
             if config.preventCache {
-                // 기존 데이터 정리
                 let dataStore = webView.configuration.websiteDataStore
                 let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
                 dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) {}
@@ -894,27 +922,18 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             let finalUrl = config.preventCache ? addCacheBusterToUrl(urlString) : urlString
             let optimizedUrlString = optimizeURL(finalUrl)
             
+            initialDomain = getRootDomain(from: optimizedUrlString)
+            currentRootDomain = initialDomain
+            
             if let url = URL(string: optimizedUrlString) {
-                // 캐시 방지 설정
-//                if config.preventCache {
-//                    let dataStore = WKWebsiteDataStore.nonPersistent()
-//                    webView.configuration.websiteDataStore = dataStore
-//                    
-//                }
                 
                 var request = URLRequest(url: url)
                 
-                if config.preventCache {
-                    // 캐시 방지가 true일 때만 캐시 관련 헤더 설정
-                    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-                    request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
-                    request.setValue("no-cache", forHTTPHeaderField: "Pragma")
-                    request.setValue("0", forHTTPHeaderField: "Expires")
-                    request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
-                } else {
-                    // 쿠키 유지를 위한 기본 캐시 정책
-                    request.cachePolicy = .useProtocolCachePolicy
-                }
+                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
+                request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+                request.setValue("0", forHTTPHeaderField: "Expires")
+                request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
                 
                 request.httpShouldHandleCookies = true
                 
@@ -926,6 +945,25 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
     }
 
+    private func getRootDomain(from urlString: String) -> String {
+        guard let url = URL(string: urlString),
+              let host = url.host else {
+            return ""
+        }
+        
+        var cleanHost = host
+        if cleanHost.hasPrefix("www.") {
+            cleanHost = String(cleanHost.dropFirst(4))
+        }
+        
+        let components = cleanHost.components(separatedBy: ".")
+        if let firstComponent = components.first {
+            return firstComponent
+        }
+        
+        return cleanHost
+    }
+    
     private func addCacheBusterToUrl(_ urlString: String) -> String {
         guard let url = URL(string: urlString) else { return urlString }
         
@@ -1214,15 +1252,12 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         present(alert, animated: true)
     }
 
-    // 추가: 더블 탭 확인 방식을 원한다면 이 메서드도 사용 가능
     private func handleConfirmExitWithDoubleTap() {
         let currentTime = Date().timeIntervalSince1970
         
         if currentTime - lastBackPressed < backConfirmTimeout {
-            // 지정된 시간 내에 두 번째 탭 - 앱 종료
             closeApp()
         } else {
-            // 첫 번째 탭 - 토스트 메시지 표시
             lastBackPressed = currentTime
             showToast(message: backConfirmMessage, duration: backConfirmTimeout)
         }
@@ -1414,7 +1449,6 @@ extension InAppBrowserViewController {
         
     }
 }
-// MARK: - WKNavigationDelegate
 extension InAppBrowserViewController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -1502,19 +1536,9 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
         
-        let currentHost = webView.url?.host?.lowercased()
-        let newHost = url.host?.lowercased()
-        
-        if currentHost == nil {
-            
-            decisionHandler(.allow)
-            return
-        }
-        
-        let isSameDomain = checkSameDomain(currentHost: currentHost, newHost: newHost)
-        
+        let newRootDomain = getRootDomain(from: urlString)
+        let isSameDomain = (newRootDomain == initialDomain)
         if isSameDomain {
-            
             decisionHandler(.allow)
             return
         }
@@ -1569,7 +1593,67 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         decisionHandler(.allow)
     }
 
+    func setAdLoadTimeoutMs(_ ms: Int) {
+        let minTimeout = max(ms, 1000)
+        self.adLoadTimeoutInterval = TimeInterval(minTimeout) / 1000.0
+        updateJavaScriptTimeoutValues()
+    }
 
+    func getAdLoadTimeoutMs() -> Int {
+        let result = Int(self.adLoadTimeoutInterval * 1000)
+        return result
+    }
+
+    func setPreloadTimeoutMs(_ timeoutMs: Int) {
+        let minTimeout = max(timeoutMs, 1000)
+        self.preloadTimeoutMs = minTimeout
+        updateJavaScriptTimeoutValues()
+    }
+
+    func getPreloadTimeoutMs() -> Int {
+        return self.preloadTimeoutMs
+    }
+    private func updateJavaScriptTimeoutValues() {
+            let currentAdLoadMs = getAdLoadTimeoutMs()
+            let currentPreloadMs = getPreloadTimeoutMs()
+            
+            
+            let script = """
+            (function() {
+                
+                window._swiftAdLoadTimeoutMs = \(currentAdLoadMs);
+                window._swiftPreloadTimeoutMs = \(currentPreloadMs);
+                
+                return true;
+            })();
+            """
+            
+            webView.evaluateJavaScriptSafely(script) { (result, error) in
+                if let error = error {
+                } else {
+                }
+            }
+        }
+    func getPreloadTimeoutSeconds() -> Int {
+        let result = self.preloadTimeoutMs / 1000
+        return result
+    }
+    
+    func setLoadingCoverEnabled(_ enabled: Bool) {
+        self.isLoadingCoverEnabled = enabled
+        if !enabled && !loadingCover.isHidden {
+            hideLoadingCover()
+        }
+    }
+
+    func isLoadingCoverEnabledFunc() -> Bool {
+        return isLoadingCoverEnabled
+    }
+
+    func isLoadingCoverVisible() -> Bool {
+        return !loadingCover.isHidden
+    }
+    
     private func checkSameDomain(currentHost: String?, newHost: String?) -> Bool {
         guard let current = currentHost, let new = newHost else {
             return false
@@ -1594,40 +1678,40 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         return isSameBaseDomain
     }
     private func handleExternalApp(url: URL, appName: String, appStoreURL: String?) {
-            isMovingToExternalApp = true
-            lastExternalAppTime = Date().timeIntervalSince1970
-            
-            if UIApplication.shared.canOpenURL(url) {
-                UIApplication.shared.open(url, options: [:]) { success in
-                    
-                    if !success && appStoreURL != nil {
-                        DispatchQueue.main.async {
-                            self.showAppInstallAlert(appName: appName, appStoreURL: appStoreURL!)
-                        }
+        isMovingToExternalApp = true
+        lastExternalAppTime = Date().timeIntervalSince1970
+        
+        if UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url, options: [:]) { success in
+                
+                if !success && appStoreURL != nil {
+                    DispatchQueue.main.async {
+                        self.showAppInstallAlert(appName: appName, appStoreURL: appStoreURL!)
                     }
                 }
-            } else if let storeURL = appStoreURL {
-                showAppInstallAlert(appName: appName, appStoreURL: storeURL)
             }
+        } else if let storeURL = appStoreURL {
+            showAppInstallAlert(appName: appName, appStoreURL: storeURL)
         }
+    }
         
-        private func showAppInstallAlert(appName: String, appStoreURL: String) {
-            let alert = UIAlertController(
-                title: "\(appName) 앱이 필요합니다",
-                message: "\(appName) 앱을 설치하시겠습니까?",
-                preferredStyle: .alert
-            )
-            
-            alert.addAction(UIAlertAction(title: "설치", style: .default) { _ in
-                if let url = URL(string: appStoreURL) {
-                    UIApplication.shared.open(url)
-                }
-            })
-            
-            alert.addAction(UIAlertAction(title: "취소", style: .cancel))
-            
-            present(alert, animated: true)
-        }
+    private func showAppInstallAlert(appName: String, appStoreURL: String) {
+        let alert = UIAlertController(
+            title: "\(appName) 앱이 필요합니다",
+            message: "\(appName) 앱을 설치하시겠습니까?",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "설치", style: .default) { _ in
+            if let url = URL(string: appStoreURL) {
+                UIApplication.shared.open(url)
+            }
+        })
+        
+        alert.addAction(UIAlertAction(title: "취소", style: .cancel))
+        
+        present(alert, animated: true)
+    }
         
         
     private func openCoupangAppStore() {
@@ -1640,7 +1724,9 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     }
     
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        showLoadingCover()
+        if isLoadingCoverEnabled{
+            showLoadingCover()
+        }
     }
     
     
@@ -1765,20 +1851,264 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         
         webView.evaluateJavaScript(kakaoScript, completionHandler: nil)
     }
+    
+    
+    func requestRewardedAd(adUnit: String, callbackFunction: String) {
+        isUsingUnifiedCallback = true
+        currentCallbackType = "unified"
+        if isLoadingAd {
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "rewarded", status: "already_loading", adUnit: adUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1004, detailInfo: "Ad is already being loaded")
+            return
+        }
+        
+        if let currentAd = rewardedAd, currentAdUnitId == adUnit {
+            resetAdState()
+        } else if rewardedAd != nil && currentAdUnitId != adUnit {
+            resetAdState()
+        }
+        
+        if isAdAvailable(adUnit: adUnit) {
+            showExistingRewardedAdUnified(adUnit: adUnit, callbackFunction: callbackFunction)
+        } else {
+            loadNewRewardedAdUnified(adUnit: adUnit, callbackFunction: callbackFunction)
+        }
+    }
+    
+    func requestInterstitialAd(adUnit: String, callbackFunction: String) {
+        isUsingUnifiedCallback = true
+        currentCallbackType = "unified"
+        if isLoadingAd {
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "interstitial", status: "already_loading", adUnit: adUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1004, detailInfo: "Ad is already being loaded")
+            return
+        }
+        
+        if let currentAd = interstitialAd, currentAdUnitId == adUnit {
+            resetAdState()
+        } else if interstitialAd != nil && currentAdUnitId != adUnit {
+            resetAdState()
+        }
+        
+        if isAdAvailableInterstitial(adUnit: adUnit) {
+            showExistingInterstitialAdUnified(callbackFunction: callbackFunction, adUnit: adUnit)
+        } else {
+            loadNewInterstitialAdUnified(adUnit: adUnit, callbackFunction: callbackFunction)
+        }
+    }
+    private func isAdAvailable(adUnit: String) -> Bool {
+            return rewardedAd != nil && adUnit == currentAdUnitId && !isLoadingAd
+        }
+        
+        private func isAdAvailableInterstitial(adUnit: String) -> Bool {
+            return interstitialAd != nil && adUnit == currentAdUnitId && !isLoadingAd
+        }
+        
+        private func loadNewRewardedAdUnified(adUnit: String, callbackFunction: String) {
+            if isLoadingCoverEnabled {
+                showLoadingCover()
+            }
+            isLoadingAd = true
+            isAdRequestTimeOut = false
+            
+            let currentAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            adLoadTimeoutWorkItem?.cancel()
+            
+            let timeoutWork = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                
+                if self.isLoadingAd {
+                    if self.isLoadingCoverEnabled {
+                        self.hideLoadingCover()
+                    }
+                    self.isLoadingAd = false
+                    self.isAdRequestTimeOut = true
+                    
+                    let timeoutInfo = self.createTimeoutErrorInfo(adType: "rewarded", adUnit: currentAdUnit)
+                    self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "rewarded", status: "timeout", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1001, detailInfo: timeoutInfo)
+                }
+            }
+            
+            adLoadTimeoutWorkItem = timeoutWork
+            DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
+            
+            RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+                guard let self = self else { return }
+                
+                self.adLoadTimeoutWorkItem?.cancel()
+                
+                if self.isAdRequestTimeOut {
+                    return
+                }
+                
+                if self.isLoadingCoverEnabled {
+                    self.hideLoadingCover()
+                }
+                self.isLoadingAd = false
+                
+                if let error = error {
+                    let detailedError = self.getDetailedLoadErrorCode(error: error)
+                    let detailedErrorInfo = self.createDetailedLoadErrorInfo(error: error, adType: "rewarded", adUnit: currentAdUnit)
+                    
+                    self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "rewarded", status: detailedError, adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: (error as NSError).code, detailInfo: detailedErrorInfo)
+                    return
+                }
+                
+                self.rewardedAd = ad
+                self.currentAdUnitId = currentAdUnit
+                self.lastCallAdUnit = currentAdUnit
+                
+                self.showExistingRewardedAdUnified(adUnit: adUnit, callbackFunction: callbackFunction)
+            }
+        }
+        
+        private func createNoAdAvailableInfo(adType: String, adUnit: String) -> String {
+            
+            let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+            return """
+            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"ad_not_ready","errorCategory":"AD_NOT_READY","isRetryable":true,"message":"No ad available to show"}
+            """
+        }
+        private func showExistingRewardedAdUnified(adUnit: String, callbackFunction: String) {
+            let callbackAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+            isUsingUnifiedCallback = true
+            
+            
+            guard let rewardedAd = rewardedAd else {
+                let noAdInfo = createNoAdAvailableInfo(adType: "rewarded", adUnit: callbackAdUnit)
+                executeUnifiedCallback(callbackFunction: callbackFunction, adType: "rewarded", status: "ad_not_ready", adUnit: callbackAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1006, detailInfo: noAdInfo)
+                return
+            }
+            
+            isRewardEarned = false
+            pendingCallbackFunction = callbackFunction
+            
+            
+            rewardedAd.fullScreenContentDelegate = self
+            
+            rewardedAd.present(from: self) { [weak self] in
+                guard let self = self else { return }
+                
+                self.isRewardEarned = true
+                
+                let rewardInfo = self.createSimpleRewardEarnedInfo(adType: "rewarded", adUnit: callbackAdUnit)
+                self.executeUnifiedCallback(
+                    callbackFunction: callbackFunction,
+                    adType: "rewarded",
+                    status: "reward_earned",
+                    adUnit: callbackAdUnit,
+                    sdkVersion: InAppBrowserViewController.SDK_VERSION,
+                    errorCode: 0,
+                    detailInfo: rewardInfo
+                )
+                
+            }
+        }
+        
+        private func loadNewInterstitialAdUnified(adUnit: String, callbackFunction: String) {
+            if isLoadingCoverEnabled {
+                showLoadingCover()
+            }
+            isLoadingAd = true
+            isAdRequestTimeOut = false
+            
+            let currentAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            adLoadTimeoutWorkItem?.cancel()
+            
+            let timeoutWork = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                
+                if self.isLoadingAd {
+                    if self.isLoadingCoverEnabled {
+                        self.hideLoadingCover()
+                    }
+                    self.isLoadingAd = false
+                    self.isAdRequestTimeOut = true
+                    
+                    let timeoutInfo = self.createTimeoutErrorInfo(adType: "interstitial", adUnit: currentAdUnit)
+                    self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "interstitial", status: "timeout", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1001, detailInfo: timeoutInfo)
+                }
+            }
+            
+            adLoadTimeoutWorkItem = timeoutWork
+            DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
+            
+            InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+                guard let self = self else { return }
+                
+                self.adLoadTimeoutWorkItem?.cancel()
+                
+                if self.isAdRequestTimeOut {
+                    return
+                }
+                
+                if self.isLoadingCoverEnabled {
+                    self.hideLoadingCover()
+                }
+                self.isLoadingAd = false
+                
+                if let error = error {
+                    let detailedError = self.getDetailedLoadErrorCode(error: error)
+                    let detailedErrorInfo = self.createDetailedLoadErrorInfo(error: error, adType: "interstitial", adUnit: currentAdUnit)
+                    
+                    self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "interstitial", status: detailedError, adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: (error as NSError).code, detailInfo: detailedErrorInfo)
+                    return
+                }
+                
+                self.interstitialAd = ad
+                self.lastCallAdUnit = currentAdUnit
+                
+                self.showExistingInterstitialAdUnified(callbackFunction: callbackFunction, adUnit: currentAdUnit)
+            }
+        }
+        
+        private func showExistingInterstitialAdUnified(callbackFunction: String, adUnit: String) {
+            guard let interstitialAd = interstitialAd else {
+                let noAdInfo = createNoAdAvailableInfo(adType: "interstitial", adUnit: adUnit)
+                executeUnifiedCallback(callbackFunction: callbackFunction, adType: "interstitial", status: "ad_not_ready", adUnit: adUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1006, detailInfo: noAdInfo)
+                return
+            }
+            
+            interstitialAd.fullScreenContentDelegate = self
+            interstitialAd.present(from: self)
+            pendingCallbackFunction = callbackFunction
+        }
+        
+        private func executeUnifiedCallback(callbackFunction: String, adType: String, status: String, adUnit: String, sdkVersion: String, errorCode: Int, detailInfo: String) {
+            let script = "javascript:\(callbackFunction)(\"\(adType)\", \"\(status)\", \"\(adUnit)\", \"\(Self.SDK_VERSION)\", \(errorCode), \"\(escapeJavaScript(detailInfo))\");"
+            webView.evaluateJavaScriptSafely(script)
+        }
+    public func syncCookiesToDisk() {
+            syncCookiesToHTTPCookieStorage()
+        }
 }
 
-// MARK: - WKScriptMessageHandler
 extension InAppBrowserViewController: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
-        
         switch message.name {
         case "iOSInterface":
             if let type = body["type"] as? String {
                 switch type {
+                case "showLoadingCover":
+                    showLoadingCoverFromWeb()
+                case "hideLoadingCover":
+                    hideLoadingCoverFromWeb()
                 case "close":
                     closeWebView()
-                    
+                case "isPreloadedAdAvailable":
+                    if let adType = body["adType"] as? String {
+                        let isAvailable = isPreloadedAdAvailable(adType: adType)
+                        
+                        DispatchQueue.main.async {
+                            let script = "if(window._preloadedAdCheckCallback) window._preloadedAdCheckCallback(\(isAvailable));"
+                            self.webView.evaluateJavaScriptSafely(script)
+                        }
+                    }
+                case "clearPreloadedAd":
+                    if let adType = body["adType"] as? String {
+                        clearPreloadedAd(adType: adType)
+                    }
                 case "interstitial":
                     if let adUnit = body["adUnit"] as? String,
                        let callbackFunction = body["callbackFunction"] as? String {
@@ -1806,15 +2136,19 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                 case "requestAdIdConsent", "requestATTPermission":
                     if let callbackFunction = body["callbackFunction"] as? String {
                         requestATTPermission(callbackFunction: callbackFunction)
+                    } else {
                     }
+                    
                 case "checkAdIdConsentStatus", "getATTStatus":
                     if let callbackFunction = body["callbackFunction"] as? String {
                         checkATTStatus(callbackFunction: callbackFunction)
+                    } else {
                     }
                     
                 case "getAdvertisingId":
                     if let callbackFunction = body["callbackFunction"] as? String {
                         getAdvertisingId(callbackFunction: callbackFunction)
+                    } else {
                     }
                     
                 case "openExternalURL":
@@ -1841,6 +2175,54 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                     }
                 case "triggerBackAction":
                     handleBackAction()
+                case "requestRewardedAd":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
+                        requestRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
+                    }
+
+                case "requestInterstitialAd":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
+                        requestInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
+                    }
+
+                case "preloadRewardedAd":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
+                        preloadRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction)
+                    }
+                case "preloadInterstitialAd":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
+                        preloadInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction)
+                    }
+
+                case "showPreloadedRewardedAd":
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        showPreloadedRewardedAd(callbackFunction: callbackFunction)
+                    }
+                case "showPreloadedInterstitialAd":
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        showPreloadedInterstitialAd(callbackFunction: callbackFunction)
+                    }
+
+                case "setPreloadTimeoutMs":
+                    if let timeoutMs = body["timeoutMs"] as? Int {
+                        setPreloadTimeoutMs(timeoutMs)
+                    }
+
+                case "setAdLoadTimeoutMs":
+                    if let timeoutMs = body["timeoutMs"] as? Int {
+                        setAdLoadTimeoutMs(timeoutMs)
+                    }
+                case "setLoadingCoverEnabled":
+                    if let enabled = body["enabled"] as? Bool {
+                        setLoadingCoverEnabled(enabled)
+                    }
+
+                case "syncCookies":
+                    syncCookiesToDisk()
                 
                     
                 default:
@@ -1865,7 +2247,7 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
         }
     }
 }
-// MARK: - Web Control Functions (백 액션 제어)
+
 extension InAppBrowserViewController {
     
     func setBackActionFromWeb(_ actionString: String) {
@@ -1893,7 +2275,7 @@ extension InAppBrowserViewController {
         backConfirmTimeout = timeout
     }
 }
-// MARK: - Ad Related Functions
+
 extension InAppBrowserViewController {
     private var isShowingAlert: Bool {
         return presentedViewController is UIAlertController
@@ -2025,11 +2407,13 @@ extension InAppBrowserViewController {
             self.backConfirmMessage = newConfig.backConfirmMessage
             self.backConfirmTimeout = newConfig.backConfirmTimeout
             
-            updateButtonRoles(leftRole: newConfig.leftButtonRole, rightRole: newConfig.rightButtonRole)
+        updateButtonRoles(leftRole: newConfig.leftButtonRole, rightRole: newConfig.rightButtonRole,leftIcon: newConfig.leftButtonIcon,rightIcon: newConfig.rightButtonIcon)
             
             
         }
     func showRewardedAd(adUnit: String, callbackFunction: String) {
+        isUsingUnifiedCallback = false
+        currentCallbackType = "legacy"
         if isLoadingAd { return }
         
         if let currentAd = rewardedAd, currentAdUnitId == adUnit {
@@ -2040,6 +2424,8 @@ extension InAppBrowserViewController {
     }
     
     func showInterstitialAd(adUnit: String, callbackFunction: String) {
+        isUsingUnifiedCallback = false
+        currentCallbackType = "legacy"
         if isLoadingAd { return }
         
         if let currentAd = interstitialAd, currentAdUnitId == adUnit {
@@ -2096,8 +2482,16 @@ extension InAppBrowserViewController {
         return nil
     }
     
+    private func createDismissedWithRewardInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"dismissed_with_reward","eventType":"AD_DISMISSED_WITH_REWARD","message":"Ad was dismissed after reward was earned"}
+        """
+    }
     private func loadNewRewardedAd(adUnit: String, callbackFunction: String) {
-        showLoadingCover()
+        if isLoadingCoverEnabled {
+            showLoadingCover()
+        }
         isLoadingAd = true
         isAdRequestTimeOut = false
         
@@ -2168,7 +2562,9 @@ extension InAppBrowserViewController {
     }
     
     private func loadNewInterstitialAd(adUnit: String, callbackFunction: String) {
-        showLoadingCover()
+        if isLoadingCoverEnabled {
+            showLoadingCover()
+        }
         isLoadingAd = true
         isAdRequestTimeOut = false
         
@@ -2239,7 +2635,9 @@ extension InAppBrowserViewController {
     }
     
     private func loadNewRewardedInterstitialAd(adUnit: String, callbackFunction: String) {
-        showLoadingCover()
+        if isLoadingCoverEnabled{
+            showLoadingCover()
+        }
         isLoadingAd = true
         isAdRequestTimeOut = false
         
@@ -2324,7 +2722,10 @@ extension InAppBrowserViewController {
     }
         
     private func loadAutoShowRewardedInterstitialAd(adUnit: String, delayMs: Int, callbackFunction: String) {
-        showLoadingCover()
+        
+        if isLoadingCoverEnabled{
+            showLoadingCover()
+        }
         isLoadingAd = true
         isAdRequestTimeOut = false
         
@@ -2422,13 +2823,26 @@ extension InAppBrowserViewController {
         rewardedInterstitialAd = nil
         currentAdUnitId = ""
         isLoadingAd = false
-        if !isRewardEarned {
-            pendingCallbackFunction = nil
-        }
     }
 }
-
-// MARK: - ATT (App Tracking Transparency) Functions
+extension InAppBrowserViewController {
+    private func createSimpleCancelInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"cancelled","eventType":"AD_CANCELLED","message":"User cancelled the ad"}
+        """
+    }
+    
+    private func createDetailedPresentErrorInfo(error: Error, adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
+        let errorCode = (error as NSError).code
+        
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"PRESENT_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"PRESENTATION_FAILED","isRetryable":false}
+        """
+    }
+}
 extension InAppBrowserViewController {
     @available(iOS 14.5, *)
     private func notifyWebWithATTStatusAndAdId(status: ATTrackingManager.AuthorizationStatus) {
@@ -2467,27 +2881,21 @@ extension InAppBrowserViewController {
         (function() {
             try {
                 
-                // 1. onReceiveAdId 함수 호출 체크 및 실행 (한 번만!)
                 if (typeof window.onReceiveAdId === 'function') {
                     window.onReceiveAdId('\(adId)', '\(statusString)', \(statusCode));
                 } else {
                     
-                    // 함수가 없다면 나중에 호출될 수 있도록 데이터 저장
                     window._pendingAdIdData = {
                         adId: '\(adId)',
                         status: '\(statusString)',
                         statusCode: \(statusCode)
                     };
-                    console.log('📦 데이터를 window._pendingAdIdData에 저장');
                 }
                 
-                // 2. 전역 변수 업데이트
                 window.currentAdId = '\(adId)';
                 window.currentATTStatus = '\(statusString)';
                 window.currentATTStatusCode = \(statusCode);
-                console.log('📝 전역 변수 업데이트 완료');
                 
-                // 3. 커스텀 이벤트 발생
                 const event = new CustomEvent('adIdAndATTStatusReceived', { 
                     detail: {
                         adId: '\(adId)',
@@ -2498,7 +2906,7 @@ extension InAppBrowserViewController {
                 window.dispatchEvent(event);
                 
                 const callbackPatterns = [
-                    'handleAdId',        // onReceiveAdId 제거!
+                    'handleAdId',        
                     'processAdId',
                     'adIdCallback'
                 ];
@@ -2599,30 +3007,38 @@ extension InAppBrowserViewController {
             notifyWebWithAdId(adId)
         }
     }
-    func getAdvertisingId(callbackFunction: String) {
+    func requestATTPermission(callbackFunction: String) {
         
         if #available(iOS 14.5, *) {
-            let status = ATTrackingManager.trackingAuthorizationStatus
+            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
             
-            if status == .authorized {
-                let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-                let jsonResult = """
-                {"adId": "\(adId)", "available": true, "status": "authorized"}
-                """
-                
-                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
-            } else {
-                let jsonResult = """
-                {"adId": "", "available": false, "status": "\(getATTStatusString(status))"}
-                """
-                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
+            if currentStatus != .notDetermined {
+                let resultJson = createATTResultJsonString(status: currentStatus)
+                let script = "\(callbackFunction)('\(resultJson)');"
+                webView.evaluateJavaScriptSafely(script)
+                return
+            }
+            
+            ATTrackingManager.requestTrackingAuthorization { [weak self] status in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    let resultJson = self.createATTResultJsonString(status: status)
+                    let script = "\(callbackFunction)('\(resultJson)');"
+                    
+                    self.webView.evaluateJavaScriptSafely(script)
+                    
+                    if status == .authorized {
+                        let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+                        self.notifyWebWithAdId(adId)
+                    }
+                }
             }
         } else {
             let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-            let jsonResult = """
-            {"adId": "\(adId)", "available": true, "status": "authorized"}
-            """
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)('\(jsonResult)');")
+            let resultJson = "{\"status\":\"authorized\",\"statusCode\":3,\"adId\":\"\(adId)\"}"
+            let script = "\(callbackFunction)('\(resultJson)');"
+            webView.evaluateJavaScriptSafely(script)
         }
     }
 
@@ -2630,47 +3046,328 @@ extension InAppBrowserViewController {
         
         if #available(iOS 14.5, *) {
             let status = ATTrackingManager.trackingAuthorizationStatus
-            let resultJson = createATTResultJson(status: status)
+            let resultJson = createATTResultJsonString(status: status)
+            let script = "\(callbackFunction)('\(resultJson)');"
             
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+            webView.evaluateJavaScriptSafely(script)
         } else {
-            let resultJson = """
-            {"status": "authorized", "statusCode": 3, "adId": "\(ASIdentifierManager.shared().advertisingIdentifier.uuidString)"}
-            """
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            let resultJson = "{\"status\":\"authorized\",\"statusCode\":3,\"adId\":\"\(adId)\"}"
+            let script = "\(callbackFunction)('\(resultJson)');"
+            webView.evaluateJavaScriptSafely(script)
         }
     }
 
-    func requestATTPermission(callbackFunction: String) {
+    func getAdvertisingId(callbackFunction: String) {
         
         if #available(iOS 14.5, *) {
-            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+            let status = ATTrackingManager.trackingAuthorizationStatus
             
-            if currentStatus != .notDetermined {
-                // 이미 결정된 상태 - 콜백만 실행
-                let resultJson = createATTResultJson(status: currentStatus)
-                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+            if status == .authorized {
+                let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+                let jsonResult = "{\"adId\":\"\(adId)\",\"available\":true,\"status\":\"authorized\"}"
+                let script = "\(callbackFunction)('\(jsonResult)');"
+                
+                webView.evaluateJavaScriptSafely(script)
+            } else {
+                let statusString = getATTStatusString(status)
+                let jsonResult = "{\"adId\":\"\",\"available\":false,\"status\":\"\(statusString)\"}"
+                let script = "\(callbackFunction)('\(jsonResult)');"
+                webView.evaluateJavaScriptSafely(script)
+            }
+        } else {
+            let adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            let jsonResult = "{\"adId\":\"\(adId)\",\"available\":true,\"status\":\"authorized\"}"
+            let script = "\(callbackFunction)('\(jsonResult)');"
+            webView.evaluateJavaScriptSafely(script)
+        }
+    }
+
+    @available(iOS 14.5, *)
+    private func createATTResultJsonString(status: ATTrackingManager.AuthorizationStatus) -> String {
+        var statusString = ""
+        var statusCode = 0
+        var adId = ""
+        
+        switch status {
+        case .authorized:
+            statusString = "authorized"
+            statusCode = 3
+            adId = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+        case .denied:
+            statusString = "denied"
+            statusCode = 2
+        case .restricted:
+            statusString = "restricted"
+            statusCode = 1
+        case .notDetermined:
+            statusString = "notDetermined"
+            statusCode = 0
+        @unknown default:
+            statusString = "unknown"
+            statusCode = -1
+        }
+        
+        return "{\"status\":\"\(statusString)\",\"statusCode\":\(statusCode),\"adId\":\"\(adId)\"}"
+    }
+    private func escapeJavaScript(_ str: String) -> String {
+        return str.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+    }
+
+    private func createTimeoutErrorInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"timeout","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(preloadTimeoutMs)}
+        """
+    }
+    
+    func preloadRewardedAd(adUnit: String, callbackFunction: String) {
+        if isPreloadingRewardedAd {
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_rewarded", status: "already_loading", adUnit: adUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1004, detailInfo: "Ad is already being loaded")
+            return
+        }
+        
+        self.pendingCallbackFunction = callbackFunction
+        if preloadedRewardedAd != nil {
+            preloadedRewardedAd = nil
+            preloadedRewardedAdUnit = nil
+        }
+        
+        loadPreloadedRewardedAd(adUnit: adUnit, callbackFunction: callbackFunction, adUnitIndex: 0)
+    }
+    private func categorizeAdError(_ errorCode: Int) -> String {
+        switch errorCode {
+        case 0: return "INTERNAL_ERROR"
+        case 1: return "INVALID_REQUEST"
+        case 2: return "NETWORK_ERROR"
+        case 3: return "NO_FILL"
+        case 4: return "APP_ID_MISSING"
+        case 5: return "AD_REUSED"
+        case 6: return "AD_NOT_READY"
+        case 7: return "AD_EXPIRED"
+        case 8: return "AD_ALREADY_SHOWN"
+        case 9: return "AD_LOAD_IN_PROGRESS"
+        default: return "UNKNOWN_ERROR"
+        }
+    }
+    private func isRetryableError(_ errorCode: Int) -> Bool {
+        switch errorCode {
+        case 0, 2, 3:
+            return true
+        case 1, 4, 5, 6, 7, 8, 9:
+            return false
+        default:
+            return false
+        }
+    }
+    private func createDetailedLoadErrorInfo(error: Error, adType: String, adUnit: String) -> String {
+            let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+            let errorCode = (error as NSError).code
+            let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
+            
+            return """
+            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"\(categorizeAdError(errorCode))","isRetryable":\(isRetryableError(errorCode) ? "true" : "false")}
+            """
+        }
+    private func loadPreloadedRewardedAd(adUnit: String, callbackFunction: String, adUnitIndex: Int) {
+        isPreloadingRewardedAd = true
+        
+        let currentAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+        let timeoutInterval = TimeInterval(preloadTimeoutMs) / 1000.0
+        
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isPreloadingRewardedAd {
+                self.isPreloadingRewardedAd = false
+                
+                let detailedTimeoutInfo = self.createTimeoutErrorInfo(adType: "preload_rewarded", adUnit: currentAdUnit)
+                self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_rewarded", status: "timeout", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1001, detailInfo: detailedTimeoutInfo)
+            }
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutInterval, execute: timeoutWork)
+        
+        RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+            guard let self = self else { return }
+            
+            timeoutWork.cancel()
+            self.isPreloadingRewardedAd = false
+            
+            if let error = error {
+                let detailedError = self.getDetailedLoadErrorCode(error: error)
+                let detailedErrorInfo = self.createDetailedLoadErrorInfo(error: error, adType: "preload_rewarded", adUnit: currentAdUnit)
+                
+                self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_rewarded", status: detailedError, adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: (error as NSError).code, detailInfo: detailedErrorInfo)
                 return
             }
             
-            // ATT 팝업 표시
-            ATTrackingManager.requestTrackingAuthorization { [weak self] status in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    
-                    let resultJson = self.createATTResultJson(status: status)
-                    
-                    self.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
-                }
-            }
-        } else {
-            let resultJson = """
-            {"status": "authorized", "statusCode": 3, "adId": "\(ASIdentifierManager.shared().advertisingIdentifier.uuidString)"}
-            """
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\(resultJson));")
+            self.preloadedRewardedAd = ad
+            self.preloadedRewardedAdUnit = currentAdUnit
+            
+            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_rewarded", adUnit: currentAdUnit)
+            self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_rewarded", status: "success", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: detailedSuccessInfo)
         }
     }
-
+    
+    private func createDetailedSuccessInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"success"}
+        """
+    }
+    
+    private func createNoPreloadedAdInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"no_preloaded_ad","errorCategory":"NO_PRELOADED_AD","isRetryable":false,"message":"No preloaded ad available"}
+        """
+    }
+    
+    func showPreloadedRewardedAd(callbackFunction: String) {
+        guard let preloadedAd = preloadedRewardedAd,
+              let adUnit = preloadedRewardedAdUnit else {
+            let noAdInfo = createNoPreloadedAdInfo(adType: "show_preloaded_rewarded", adUnit: preloadedRewardedAdUnit ?? "")
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "show_preloaded_rewarded", status: "no_preloaded_ad", adUnit: preloadedRewardedAdUnit ?? "", sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1002, detailInfo: noAdInfo)
+            return
+        }
+        
+        let adUnitForCallback = adUnit
+        isPreloadedRewardEarned = false
+        preloadedPendingCallbackFunction = callbackFunction
+        isUsingUnifiedCallback = true
+        
+        
+        preloadedAd.fullScreenContentDelegate = self
+        
+        preloadedAd.present(from: self) { [weak self] in
+            guard let self = self else { return }
+            
+            self.isPreloadedRewardEarned = true
+            
+            let rewardInfo = self.createSimpleRewardEarnedInfo(adType: "show_preloaded_rewarded", adUnit: adUnitForCallback)
+            self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "show_preloaded_rewarded", status: "reward_earned", adUnit: adUnitForCallback, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: rewardInfo)
+        }
+    }
+    
+    private func createSimpleRewardEarnedInfo(adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"reward_earned","eventType":"REWARD_EARNED"}
+        """
+    }
+    
+    func preloadInterstitialAd(adUnit: String, callbackFunction: String) {
+        if isPreloadingInterstitialAd {
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_interstitial", status: "already_loading", adUnit: adUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1004, detailInfo: "Ad is already being loaded")
+            return
+        }
+        
+        if preloadedInterstitialAd != nil {
+            preloadedInterstitialAd = nil
+            preloadedInterstitialAdUnit = nil
+        }
+        
+        loadPreloadedInterstitialAd(adUnit: adUnit, callbackFunction: callbackFunction, adUnitIndex: 0)
+    }
+    private func getDetailedLoadErrorCode(error: Error) -> String {
+            let errorCode = (error as NSError).code
+            
+            switch errorCode {
+            case 0: return "load_internal_error"
+            case 1: return "load_invalid_request"
+            case 2: return "load_network_error"
+            case 3: return "load_no_fill"
+            case 4: return "load_app_id_missing"
+            default: return "load_unknown_error_\(errorCode)"
+            }
+        }
+    private func loadPreloadedInterstitialAd(adUnit: String, callbackFunction: String, adUnitIndex: Int) {
+        isPreloadingInterstitialAd = true
+        
+        let currentAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+        let timeoutInterval = TimeInterval(preloadTimeoutMs) / 1000.0
+        
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isPreloadingInterstitialAd {
+                self.isPreloadingInterstitialAd = false
+                
+                let detailedTimeoutInfo = self.createTimeoutErrorInfo(adType: "preload_interstitial", adUnit: currentAdUnit)
+                self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_interstitial", status: "timeout", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1001, detailInfo: detailedTimeoutInfo)
+            }
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutInterval, execute: timeoutWork)
+        
+        InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+            guard let self = self else { return }
+            
+            timeoutWork.cancel()
+            self.isPreloadingInterstitialAd = false
+            
+            if let error = error {
+                let detailedError = self.getDetailedLoadErrorCode(error: error)
+                let detailedErrorInfo = self.createDetailedLoadErrorInfo(error: error, adType: "preload_interstitial", adUnit: currentAdUnit)
+                
+                self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_interstitial", status: detailedError, adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: (error as NSError).code, detailInfo: detailedErrorInfo)
+                return
+            }
+            
+            self.preloadedInterstitialAd = ad
+            self.preloadedInterstitialAdUnit = currentAdUnit
+            
+            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_interstitial", adUnit: currentAdUnit)
+            self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_interstitial", status: "success", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: detailedSuccessInfo)
+        }
+    }
+    
+    func showPreloadedInterstitialAd(callbackFunction: String) {
+        guard let preloadedAd = preloadedInterstitialAd,
+              let adUnit = preloadedInterstitialAdUnit else {
+            let noAdInfo = createNoPreloadedAdInfo(adType: "show_preloaded_interstitial", adUnit: preloadedInterstitialAdUnit ?? "")
+            executeUnifiedCallback(callbackFunction: callbackFunction, adType: "show_preloaded_interstitial", status: "no_preloaded_ad", adUnit: preloadedInterstitialAdUnit ?? "", sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: -1002, detailInfo: noAdInfo)
+            return
+        }
+        
+        let adUnitForCallback = adUnit
+        preloadedPendingCallbackFunction = callbackFunction
+        
+        preloadedAd.fullScreenContentDelegate = self
+        preloadedAd.present(from: self)
+        isUsingUnifiedCallback = true
+        
+    }
+    
+    
+    func clearPreloadedAd(adType: String) {
+        switch adType.lowercased() {
+        case "rewarded":
+            preloadedRewardedAd = nil
+            preloadedRewardedAdUnit = nil
+        case "interstitial":
+            preloadedInterstitialAd = nil
+            preloadedInterstitialAdUnit = nil
+        case "rewarded_interstitial":
+            preloadedRewardedInterstitialAd = nil
+            preloadedRewardedInterstitialAdUnit = nil
+        case "all":
+            preloadedRewardedAd = nil
+            preloadedRewardedAdUnit = nil
+            preloadedInterstitialAd = nil
+            preloadedInterstitialAdUnit = nil
+            preloadedRewardedInterstitialAd = nil
+            preloadedRewardedInterstitialAdUnit = nil
+        default:
+            break
+        }
+    }
 
     private func sendInitialATTStatusOnce() {
         
@@ -2743,7 +3440,7 @@ extension InAppBrowserViewController {
     }
 }
 
-// MARK: - FullScreenContentDelegate
+
 extension InAppBrowserViewController: FullScreenContentDelegate {
     func adDidDismissFullScreenContent(_ ad: FullScreenPresentingAd) {
         var adType = "reward"
@@ -2756,23 +3453,104 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
             adType = "rewarded_interstitial"
         }
         
-        if isRewardEarned {
-            if let callbackFunction = pendingCallbackFunction {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"success\", \"\(adname)\", \(adnum));")
-                    self?.isRewardEarned = false
-                    self?.pendingCallbackFunction = nil
+        let isPreloadedAd = (ad === preloadedRewardedAd || ad === preloadedInterstitialAd)
+        let callbackToUse = isPreloadedAd ? preloadedPendingCallbackFunction : pendingCallbackFunction
+        let rewardEarned = isPreloadedAd ? isPreloadedRewardEarned : isRewardEarned
+        let adUnit = isPreloadedAd ? (preloadedRewardedAdUnit ?? preloadedInterstitialAdUnit ?? adname) : adname
+        
+        
+        if ad is InterstitialAd {
+            if let callbackFunction = callbackToUse {
+                if isUsingUnifiedCallback {
+                    let successInfo = createDetailedSuccessInfo(adType: adType, adUnit: adUnit)
+                    executeUnifiedCallback(
+                        callbackFunction: callbackFunction,
+                        adType: isPreloadedAd ? "show_preloaded_interstitial" : adType,
+                        status: "success",
+                        adUnit: adUnit,
+                        sdkVersion: InAppBrowserViewController.SDK_VERSION,
+                        errorCode: 0,
+                        detailInfo: successInfo
+                    )
+                } else {
+                    webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"success\", \"\(adUnit)\", \(adnum));")
                 }
             }
-        } else {
-            if let callbackFunction = pendingCallbackFunction {
-                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"cancelled\", \"\(currentAdUnitId)\", \(adUnitIndexDisplay));")
+            
+            if isPreloadedAd {
+                preloadedInterstitialAd = nil
+                preloadedInterstitialAdUnit = nil
+                preloadedPendingCallbackFunction = nil
+            } else {
+                resetAdState()
+                adUnitIndexCall = 0
+                adUnitIndexDisplay = 1
             }
+            
+            isUsingUnifiedCallback = false
+            currentCallbackType = "legacy"
+            return
         }
         
-        resetAdState()
-        adUnitIndexCall = 0
-        adUnitIndexDisplay = 1
+        if let callbackFunction = callbackToUse {
+            if rewardEarned {
+                if isUsingUnifiedCallback {
+                    let rewardInfo = createDismissedWithRewardInfo(
+                        adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
+                        adUnit: adUnit
+                    )
+                    executeUnifiedCallback(
+                        callbackFunction: callbackFunction,
+                        adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
+                        status: "dismissed_with_reward",
+                        adUnit: adUnit,
+                        sdkVersion: InAppBrowserViewController.SDK_VERSION,
+                        errorCode: 0,
+                        detailInfo: rewardInfo
+                    )
+                } else {
+                    webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"dismissed_with_reward\", \"\(adUnit)\", \(adnum));")
+                }
+                
+                if isPreloadedAd {
+                    isPreloadedRewardEarned = false
+                } else {
+                    isRewardEarned = false
+                }
+            } else {
+                if isUsingUnifiedCallback {
+                    let cancelInfo = createSimpleCancelInfo(
+                        adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
+                        adUnit: adUnit
+                    )
+                    executeUnifiedCallback(
+                        callbackFunction: callbackFunction,
+                        adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
+                        status: "cancelled",
+                        adUnit: adUnit,
+                        sdkVersion: InAppBrowserViewController.SDK_VERSION,
+                        errorCode: -1003,
+                        detailInfo: cancelInfo
+                    )
+                } else {
+                    webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"cancelled\", \"\(adUnit)\", \(adnum));")
+                }
+            }
+        }
+
+        if isPreloadedAd {
+            preloadedRewardedAd = nil
+            preloadedRewardedAdUnit = nil
+            preloadedPendingCallbackFunction = nil
+            isPreloadedRewardEarned = false
+        } else {
+            resetAdState()
+            adUnitIndexCall = 0
+            adUnitIndexDisplay = 1
+        }
+        
+        isUsingUnifiedCallback = false
+        currentCallbackType = "legacy"
     }
     
     func ad(_ ad: FullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
@@ -2783,35 +3561,47 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
             adType = "rewarded_interstitial"
         }
         
-        if let callbackFunction = pendingCallbackFunction {
-            webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"failed\", \"\(currentAdUnitId)\", \(adUnitIndexDisplay));")
-        }
-        resetAdState()
-    }
-    
-}
-extension InAppBrowserViewController {
-    func updateButtonRoles(leftRole: InAppBrowserConfig.ButtonRole, rightRole: InAppBrowserConfig.ButtonRole) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            
-            if let leftButton = self.view.viewWithTag(100) as? UIButton {
-                
-                self.setupButton(leftButton, role: leftRole, icon: self.config.leftButtonIcon, isLeft: true)
-                
+        let isPreloadedAd = (ad === preloadedRewardedAd || ad === preloadedInterstitialAd)
+        let callbackToUse = isPreloadedAd ? preloadedPendingCallbackFunction : pendingCallbackFunction
+        let adUnit = isPreloadedAd ? (preloadedRewardedAdUnit ?? preloadedInterstitialAdUnit ?? currentAdUnitId) : currentAdUnitId
+        
+        if let callbackFunction = callbackToUse {
+            if isUsingUnifiedCallback {
+                let errorInfo = createDetailedPresentErrorInfo(
+                    error: error,
+                    adType: isPreloadedAd ? "show_preloaded_\(adType)" : adType,
+                    adUnit: adUnit
+                )
+                executeUnifiedCallback(
+                    callbackFunction: callbackFunction,
+                    adType: isPreloadedAd ? "show_preloaded_\(adType)" : adType,
+                    status: "present_failed",
+                    adUnit: adUnit,
+                    sdkVersion: InAppBrowserViewController.SDK_VERSION,
+                    errorCode: (error as NSError).code,
+                    detailInfo: errorInfo
+                )
             } else {
-                
-            }
-            
-            if let rightButton = self.view.viewWithTag(200) as? UIButton {
-                
-                self.setupButton(rightButton, role: rightRole, icon: self.config.rightButtonIcon, isLeft: false)
-                
-            } else {
-                
+                webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"failed\", \"\(adUnit)\", \(adUnitIndexDisplay));")
             }
         }
+        
+        if isPreloadedAd {
+            if ad === preloadedRewardedAd {
+                preloadedRewardedAd = nil
+                preloadedRewardedAdUnit = nil
+            } else if ad === preloadedInterstitialAd {
+                preloadedInterstitialAd = nil
+                preloadedInterstitialAdUnit = nil
+            }
+            preloadedPendingCallbackFunction = nil
+            isPreloadedRewardEarned = false
+        } else {
+            resetAdState()
+        }
+        
+        isUsingUnifiedCallback = false
+        currentCallbackType = "legacy"
     }
 }
 
