@@ -10,7 +10,6 @@ public class InAppBrowserConfig {
     var isDebugEnabled: Bool = false
     var userAgent: String = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     
-    // UI 커스터마이징 옵션
     var fontFamily: String?
     var fontSize: Int = 18
     var toolbarBackgroundColor: UIColor?
@@ -18,7 +17,6 @@ public class InAppBrowserConfig {
     var backButtonImageName: String?
     var closeButtonImageName: String?
     
-    // 버튼 역할 설정 추가
     var leftButtonRole: ButtonRole = .back
     var rightButtonRole: ButtonRole = .close
     var leftButtonVisible: Bool = true
@@ -26,12 +24,10 @@ public class InAppBrowserConfig {
     var leftButtonIcon: ButtonIcon = .auto
     var rightButtonIcon: ButtonIcon = .auto
     
-    // 백 액션 제어 추가
     var backAction: BackAction = .historyBack
     var backConfirmMessage: String = "한번 더 누르면 창이 닫힙니다"
     var backConfirmTimeout: TimeInterval = 2.0
     
-    // 로딩 커스터마이징 옵션
     var loadingBackgroundColor: UIColor?
     var progressBarColor: UIColor?
     var progressBarStyle: Int = 0
@@ -59,6 +55,9 @@ public class InAppBrowserConfig {
     var allowImageSelect: Bool = false
 
     var preventCache: Bool = false
+    
+    var isBannerEnabled: Bool = false
+    var bannerHeight: Int = 50
     
     public enum ButtonRole {
         case back
@@ -124,7 +123,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        // 버튼 역할 설정 메소드 추가
         public func setLeftButtonRole(_ role: ButtonRole) -> Builder {
             config.leftButtonRole = role
             return self
@@ -155,7 +153,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        // 백 액션 설정 메소드 추가
         public func setBackAction(_ action: BackAction) -> Builder {
             config.backAction = action
             return self
@@ -186,7 +183,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        // UI 커스터마이징 옵션
         public func setFontFamily(_ fontFamily: String) -> Builder {
             config.fontFamily = fontFamily
             return self
@@ -217,7 +213,6 @@ public class InAppBrowserConfig {
             return self
         }
         
-        // 로딩 커스터마이징 옵션
         public func setLoadingBackgroundColor(_ color: UIColor) -> Builder {
             config.loadingBackgroundColor = color
             return self
@@ -318,6 +313,17 @@ public class InAppBrowserConfig {
             config.allowImageSelect = allow
             return self
         }
+        public func setBannerEnabled(_ enabled: Bool) -> Builder {
+            config.isBannerEnabled = enabled
+            return self
+        }
+        
+        public func setBannerHeight(_ height: Int) -> Builder {
+            let validatedHeight = max(32, min(250, height)) 
+            config.bannerHeight = validatedHeight
+            return self
+        }
+
         
         public func build() -> InAppBrowserConfig {
             return config

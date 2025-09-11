@@ -5,8 +5,8 @@ import AppTrackingTransparency
 import AdSupport
 import Foundation
 
-class InAppBrowserViewController: UIViewController, WKUIDelegate {
-    static let SDK_VERSION = "1.1.9"
+class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
+    static let SDK_VERSION = "1.2.0"
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
@@ -70,6 +70,17 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     private var isUsingUnifiedCallback: Bool = false
     private var currentCallbackType: String = "legacy"
     
+    private var mainContainerStackView: UIStackView!
+    private var toolbarView: UIView!
+    private var webViewContainer: UIView!
+    private var bannerContainer: UIView!
+    
+    private var bannerAdView: BannerView?
+    private var isBannerEnabled: Bool = true
+    private var bannerHeight: Int = 50
+    private var currentBannerAdUnit: String?
+    private var isBannerVisible: Bool = false
+    private var bannerCallbackFunction: String?
 
     private var initialDomain: String?
     private var currentRootDomain: String?
@@ -86,6 +97,247 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    public func setBannerHeight(_ newHeight: Int) {
+        let validatedHeight = max(32, min(250, newHeight))
+        self.bannerHeight = validatedHeight
+    }
+    func bannerViewDidReceiveAd(_ bannerView: BannerView) {
+        let successInfo = createSimpleSuccessInfo("banner", adUnit: currentBannerAdUnit ?? "")
+        if let callbackFunction = bannerCallbackFunction {
+            executeBannerCallback(callbackFunction, adType: "banner", status: "success", adUnit: currentBannerAdUnit ?? "", errorCode: 0, detailInfo: successInfo)
+        }
+        
+        expandBannerArea()
+        showBannerAd()
+    }
+    
+    func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: Error) {
+        print("=== Banner Load Failed ===")
+        print("Error: \(error)")
+        print("Error code: \((error as NSError).code)")
+        print("Error domain: \((error as NSError).domain)")
+        print("Error description: \(error.localizedDescription)")
+        print("Error userInfo: \((error as NSError).userInfo)")
+        
+        let errorCode = (error as NSError).code
+        let errorMessage = error.localizedDescription
+        let detailedErrorInfo = """
+        {"timestamp":\(Int(Date().timeIntervalSince1970 * 1000)),"adType":"banner","adUnit":"\(currentBannerAdUnit ?? "")","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)"}
+        """
+        
+        if let callbackFunction = bannerCallbackFunction {
+            executeBannerCallback(callbackFunction, adType: "banner", status: "load_failed", adUnit: currentBannerAdUnit ?? "", errorCode: errorCode, detailInfo: detailedErrorInfo)
+        }
+        
+    }
+    
+    func bannerViewDidRecordClick(_ bannerView: BannerView) {
+        currentBackAction = .historyBack
+    }
+    public func getBannerHeight() -> Int {
+        return bannerHeight
+    }
+    
+    public func setBannerEnabled(_ enabled: Bool) {
+        let wasEnabled = self.isBannerEnabled
+        self.isBannerEnabled = enabled
+        
+        if !enabled && isBannerVisible && bannerAdView != nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.destroyBannerAd()
+            }
+        }
+    }
+    
+    public func updateBannerArea(_ height: Int, enabled: Bool) {
+        let validatedHeight = max(32, min(250, height))
+        
+        self.bannerHeight = validatedHeight
+        setBannerEnabled(enabled)
+        
+    }
+    
+    private func expandBannerArea() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if self.bannerContainer != nil {
+                self.bannerContainer.isHidden = false
+                
+                self.bannerContainer.constraints.forEach { constraint in
+                    if constraint.firstAttribute == .height {
+                        constraint.constant = CGFloat(self.bannerHeight)
+                    }
+                }
+                
+                UIView.animate(withDuration: 0.3) {
+                    self.view.layoutIfNeeded()
+                }
+            }
+        }
+    }
+    
+    private func collapseBannerArea() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if self.bannerContainer != nil {
+                self.bannerContainer.constraints.forEach { constraint in
+                    if constraint.firstAttribute == .height {
+                        constraint.constant = 0
+                    }
+                }
+                
+                UIView.animate(withDuration: 0.3, animations: {
+                    self.view.layoutIfNeeded()
+                }) { _ in
+                    self.bannerContainer.isHidden = true
+                    self.isBannerVisible = false
+                    self.updateBannerVisibilityInJS()
+                }
+            }
+        }
+    }
+    public func loadBannerAd(_ adUnit: String, callbackFunction: String) {
+        print("=== Banner Ad Load Start ===")
+        print("AdUnit: \(adUnit)")
+        print("CallbackFunction: \(callbackFunction)")
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if !self.isBannerEnabled {
+                print("Banner ads not enabled")
+                self.executeBannerCallback(callbackFunction, adType: "banner", status: "banner_not_enabled", adUnit: adUnit, errorCode: -2001, detailInfo: "Banner ads are not enabled")
+                return
+            }
+            
+            if self.bannerAdView != nil {
+                print("Removing existing banner ad")
+                self.bannerContainer.subviews.forEach { $0.removeFromSuperview() }
+                self.bannerAdView = nil
+            }
+            
+            self.currentBannerAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.bannerCallbackFunction = callbackFunction
+
+            self.bannerContainer.isHidden = false
+            self.bannerContainer.alpha = 1.0
+            
+            self.bannerContainer.constraints.forEach { constraint in
+                if constraint.firstAttribute == .height {
+                    print("Found height constraint, changing from \(constraint.constant) to \(self.bannerHeight)")
+                    constraint.constant = CGFloat(self.bannerHeight)
+                }
+            }
+            
+            self.view.setNeedsLayout()
+            self.view.layoutIfNeeded()
+            
+            var currentView: UIView? = self.bannerContainer
+            var hierarchy = "Banner container hierarchy: "
+            while currentView != nil {
+                hierarchy += "\(type(of: currentView!)) -> "
+                currentView = currentView?.superview
+            }
+            self.view.layoutIfNeeded()
+            
+            let containerWidth = self.bannerContainer.frame.width > 0 ? self.bannerContainer.frame.width : self.view.frame.width
+            
+            let adWidth = max(containerWidth, 320)
+            let adaptiveSize = inlineAdaptiveBanner(width: adWidth, maxHeight: CGFloat(self.bannerHeight))
+            
+            if isAdSizeEqualToSize(size1: adaptiveSize, size2: AdSizeInvalid) {
+                print("ERROR: Invalid ad size detected!")
+                self.executeBannerCallback(callbackFunction, adType: "banner", status: "error", adUnit: adUnit, errorCode: -3001, detailInfo: "Invalid ad size")
+                return
+            }
+            
+            self.bannerAdView = BannerView(adSize: adaptiveSize)
+            
+            if let adUnit = self.currentBannerAdUnit {
+                self.bannerAdView?.adUnitID = adUnit
+            }
+            self.bannerAdView?.rootViewController = self
+            
+            self.bannerAdView?.delegate = self
+
+            let request = Request()
+            if let bannerAdView = self.bannerAdView {
+                self.bannerContainer.addSubview(bannerAdView)
+                
+                bannerAdView.translatesAutoresizingMaskIntoConstraints = false
+                
+                let constraints = [
+                    bannerAdView.centerXAnchor.constraint(equalTo: self.bannerContainer.centerXAnchor),
+                    bannerAdView.centerYAnchor.constraint(equalTo: self.bannerContainer.centerYAnchor),
+                    bannerAdView.widthAnchor.constraint(lessThanOrEqualTo: self.bannerContainer.widthAnchor),
+                    bannerAdView.heightAnchor.constraint(lessThanOrEqualTo: self.bannerContainer.heightAnchor)
+                ]
+                
+                NSLayoutConstraint.activate(constraints)
+
+                self.view.setNeedsLayout()
+                self.view.layoutIfNeeded()
+                
+                bannerAdView.load(request)
+                
+                
+            } else {
+            }
+        }
+    }
+    
+    public func showBannerAd() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if self.isBannerEnabled && self.bannerAdView != nil {
+                self.isBannerVisible = true
+                self.updateBannerVisibilityInJS()
+            }
+        }
+    }
+    
+    public func hideBannerAd() {
+        DispatchQueue.main.async { [weak self] in
+            self?.collapseBannerArea()
+        }
+    }
+    
+    public func destroyBannerAd() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            if self.bannerAdView != nil {
+                self.bannerContainer.subviews.forEach { $0.removeFromSuperview() }
+                self.bannerAdView = nil
+                self.currentBannerAdUnit = nil
+                self.bannerCallbackFunction = nil
+            }
+            self.collapseBannerArea()
+        }
+    }
+    
+    public func isBannerAdLoaded() -> Bool {
+        return bannerAdView != nil && isBannerEnabled
+    }
+    
+    public func isBannerAdVisible() -> Bool {
+        return isBannerVisible
+    }
+    
+    private func executeBannerCallback(_ callbackFunction: String, adType: String, status: String, adUnit: String, errorCode: Int, detailInfo: String) {
+        let script = "javascript:\(callbackFunction)(\"\(adType)\", \"\(status)\", \"\(adUnit)\", \"\(Self.SDK_VERSION)\", \(errorCode), \"\(escapeJavaScript(detailInfo))\");"
+        webView.evaluateJavaScriptSafely(script)
+    }
+    
+    private func createSimpleSuccessInfo(_ adType: String, adUnit: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        return """
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"success"}
+        """
     }
     private func syncCookiesFromHTTPCookieStorage() {
         let cookies = HTTPCookieStorage.shared.cookies ?? []
@@ -104,7 +356,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
     }
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupMainLayout()
+        setupNewMainLayout()
         setupWebView()
         setupJavaScriptInterface(for: self.webView)
         
@@ -198,11 +450,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             
-            /*
-            let dataStore = webView.configuration.websiteDataStore
-            let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-            dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date(timeIntervalSince1970: 0)) { }
-            */
         }
         
         if let presentedAlert = presentedViewController as? UIAlertController {
@@ -379,7 +626,94 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate {
         }
         return nil
     }
+    private func setupNewMainLayout() {
+        view.backgroundColor = .white
+        
+        mainContainerStackView = UIStackView()
+        mainContainerStackView.axis = .vertical
+        mainContainerStackView.distribution = .fill
+        mainContainerStackView.alignment = .fill
+        mainContainerStackView.spacing = 0
+        mainContainerStackView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(mainContainerStackView)
+        
+        toolbarView = createToolbar()
+        toolbarView.translatesAutoresizingMaskIntoConstraints = false
+        
+        webViewContainer = UIView()
+        webViewContainer.translatesAutoresizingMaskIntoConstraints = false
+        
+        let webConfig = createEnhancedWebViewConfiguration()
+        webView = WKWebView(frame: .zero, configuration: webConfig)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        
+        setupWebViewProperties()
+        webViewContainer.addSubview(webView)
+        MobileAds.shared.register(webView)
+        
+        loadingCover = UIView()
+        loadingCover.translatesAutoresizingMaskIntoConstraints = false
+        loadingCover.backgroundColor = UIColor.clear
+        loadingCover.isHidden = true
+        
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: webViewContainer.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: webViewContainer.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: webViewContainer.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: webViewContainer.bottomAnchor),
+            
+        ])
+        
+        bannerContainer = UIView()
+        bannerContainer.backgroundColor = UIColor.white
+        bannerContainer.translatesAutoresizingMaskIntoConstraints = false
+        bannerContainer.isHidden = true 
+        
+        mainContainerStackView.addArrangedSubview(toolbarView)
+        mainContainerStackView.addArrangedSubview(webViewContainer)
+        mainContainerStackView.addArrangedSubview(bannerContainer)
+        
+        NSLayoutConstraint.activate([
+            mainContainerStackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            mainContainerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            mainContainerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            mainContainerStackView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            
+            toolbarView.heightAnchor.constraint(equalToConstant: CGFloat(config.toolbarHeight)),
+            bannerContainer.heightAnchor.constraint(equalToConstant: 0) 
+        ])
+    }
     
+    private func setupWebViewProperties() {
+        webView.scrollView.maximumZoomScale = 1.0
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.bouncesZoom = false
+        webView.scrollView.showsVerticalScrollIndicator = false
+        webView.scrollView.showsHorizontalScrollIndicator = false
+        
+        webView.scrollView.panGestureRecognizer.maximumNumberOfTouches = 1
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        
+        for gestureRecognizer in webView.gestureRecognizers ?? [] {
+            if gestureRecognizer is UITapGestureRecognizer {
+                gestureRecognizer.isEnabled = true
+            } else if gestureRecognizer is UIPinchGestureRecognizer {
+                gestureRecognizer.isEnabled = false
+            } else if gestureRecognizer is UILongPressGestureRecognizer {
+                gestureRecognizer.isEnabled = false
+            }
+        }
+        
+        if #available(iOS 13.0, *) {
+            webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
+        }
+        
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = true
+        }
+    }
     private func setupMainLayout() {
         view.backgroundColor = .white
         let toolbar = createToolbar()
@@ -2081,6 +2415,10 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     public func syncCookiesToDisk() {
             syncCookiesToHTTPCookieStorage()
         }
+    private func updateBannerVisibilityInJS() {
+        let script = "window._swiftBannerVisible = \(isBannerVisible);"
+        webView.evaluateJavaScriptSafely(script)
+    }
 }
 
 extension InAppBrowserViewController: WKScriptMessageHandler {
@@ -2090,6 +2428,51 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
         case "iOSInterface":
             if let type = body["type"] as? String {
                 switch type {
+                case "loadBannerAd":
+                    if let adUnit = body["adUnit"] as? String,
+                       let callbackFunction = body["callbackFunction"] as? String {
+                        loadBannerAd(adUnit, callbackFunction: callbackFunction)
+                    }
+                case "showBannerAd":
+                    showBannerAd()
+                    
+                case "hideBannerAd":
+                    hideBannerAd()
+                    
+                case "destroyBannerAd":
+                    destroyBannerAd()
+                    
+                case "isBannerAdLoaded":
+                    let isLoaded = isBannerAdLoaded()
+                    let script = "if(window._bannerLoadedCallback) window._bannerLoadedCallback(\(isLoaded));"
+                    webView.evaluateJavaScriptSafely(script)
+                    
+                case "setBannerHeight":
+                    if let height = body["height"] as? Int {
+                        setBannerHeight(height)
+                    }
+                    
+                case "getBannerHeight":
+                    let height = getBannerHeight()
+                    let script = "if(window._bannerHeightCallback) window._bannerHeightCallback(\(height));"
+                    webView.evaluateJavaScriptSafely(script)
+                    
+                case "setBannerEnabled":
+                    if let enabled = body["enabled"] as? Bool {
+                        setBannerEnabled(enabled)
+                    }
+                    
+                case "updateBannerArea":
+                    if let height = body["height"] as? Int,
+                       let enabled = body["enabled"] as? Bool {
+                        updateBannerArea(height, enabled: enabled)
+                    }
+                    
+                case "isBannerEnabled":
+                    let enabled = isBannerEnabled
+                    let script = "if(window._bannerEnabledCallback) window._bannerEnabledCallback(\(enabled));"
+                    webView.evaluateJavaScriptSafely(script)
+                    
                 case "showLoadingCover":
                     showLoadingCoverFromWeb()
                 case "hideLoadingCover":
@@ -2104,6 +2487,16 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                             let script = "if(window._preloadedAdCheckCallback) window._preloadedAdCheckCallback(\(isAvailable));"
                             self.webView.evaluateJavaScriptSafely(script)
                         }
+                    }
+                case "isBannerAdVisible":
+                    let isVisible = isBannerAdVisible()
+                    
+                    let script = "window._bannerVisibleStatus = \(isVisible);"
+                    webView.evaluateJavaScriptSafely(script)
+                    
+                    DispatchQueue.main.async {
+                        let callbackScript = "if(window._bannerVisibleCallback) window._bannerVisibleCallback(\(isVisible));"
+                        self.webView.evaluateJavaScriptSafely(callbackScript)
                     }
                 case "clearPreloadedAd":
                     if let adType = body["adType"] as? String {
