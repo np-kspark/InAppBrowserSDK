@@ -1,6 +1,7 @@
 import UIKit
 import GoogleMobileAds
 
+@MainActor
 public class InAppBrowserManager {
     public static let shared = InAppBrowserManager()
     private var config: InAppBrowserConfig?
