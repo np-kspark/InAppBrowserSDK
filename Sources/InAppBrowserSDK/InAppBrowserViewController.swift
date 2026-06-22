@@ -7,13 +7,13 @@ import Foundation
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.2.2"
+    static let SDK_VERSION = "1.2.3"
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
     private var loadingIndicator: UIView!
     private var rewardedAd: RewardedAd?
-    private var interstitialAd: InterstitialAd?
+    private var interstitialAd: AdManagerInterstitialAd?
     private var rewardedInterstitialAd: RewardedInterstitialAd?
     private var currentAdUnitId: String = ""
     private var isLoadingAd: Bool = false
@@ -26,6 +26,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var adLoadTimer: Timer?
     private var adLoadTimeoutWorkItem: DispatchWorkItem?
     private var isAdRequestTimeOut: Bool = false
+
+    // 웹에서 설정한 커스텀 타겟팅 키-밸류 저장소
+    private var customAdTargeting: [String: String] = [:]
     
     private var adUnitIndexCall: Int = 0
     private var adUnitIndexDisplay: Int = 1
@@ -51,7 +54,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var lastBackActionURL: String = ""
     
     private var preloadedRewardedAd: RewardedAd?
-    private var preloadedInterstitialAd: InterstitialAd?
+    private var preloadedInterstitialAd: AdManagerInterstitialAd?
     private var preloadedRewardedInterstitialAd: RewardedInterstitialAd?
 
     private var preloadedRewardedAdUnit: String?
@@ -65,6 +68,13 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var isPreloadedRewardEarned: Bool = false
     private var preloadedPendingCallbackFunction: String?
 
+    private var pendingBannerAdValue: AdValue?
+    private var bannerPaidEventFallbackWorkItem: DispatchWorkItem?
+    private var pendingInterstitialAdValue: AdValue?
+    private var pendingRewardedAdValue: AdValue?
+    private var pendingPreloadedInterstitialAdValue: AdValue?
+    private var pendingPreloadedRewardedAdValue: AdValue?
+
     private var preloadTimeoutMs: Int = 5000
     private var isLoadingCoverEnabled: Bool = false
     
@@ -76,7 +86,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var webViewContainer: UIView!
     private var bannerContainer: UIView!
     
-    private var bannerAdView: BannerView?
+    private var bannerAdView: AdManagerBannerView?
     private var isBannerEnabled: Bool = true
     private var bannerHeight: Int = 50
     private var currentBannerAdUnit: String?
@@ -146,7 +156,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private func createBannerTimeoutErrorInfo(adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"TIMEOUT","errorCode":-1001,"message":"Banner ad load timeout after \(BANNER_LOAD_TIMEOUT_INTERVAL) seconds","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(Int(BANNER_LOAD_TIMEOUT_INTERVAL * 1000))}
+        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"TIMEOUT","errorCode":-1001,"message":"Banner ad load timeout after \(BANNER_LOAD_TIMEOUT_INTERVAL) seconds","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(Int(BANNER_LOAD_TIMEOUT_INTERVAL * 1000)),"targeting":\(targetingJSONString())}
         """
     }
     public func setBannerHeight(_ newHeight: Int) {
@@ -159,15 +169,21 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
         cancelBannerTimeout()
         isLoadingBanner = false
-        
-        
-        let successInfo = createSimpleSuccessInfo("banner", adUnit: currentBannerAdUnit ?? "")
-        if let callbackFunction = bannerCallbackFunction {
-            executeBannerCallback(callbackFunction, adType: "banner", status: "success", adUnit: currentBannerAdUnit ?? "", errorCode: 0, detailInfo: successInfo)
-        }
-        
+
         expandBannerArea()
         showBannerAd()
+
+        bannerPaidEventFallbackWorkItem?.cancel()
+        let fallbackWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.bannerPaidEventFallbackWorkItem = nil
+            let successInfo = self.buildSuccessInfoJSON(adType: "banner", adUnit: self.currentBannerAdUnit ?? "", status: "success", responseInfo: self.bannerAdView?.responseInfo)
+            if let callbackFunction = self.bannerCallbackFunction {
+                self.executeBannerCallback(callbackFunction, adType: "banner", status: "success", adUnit: self.currentBannerAdUnit ?? "", errorCode: 0, detailInfo: successInfo)
+            }
+        }
+        bannerPaidEventFallbackWorkItem = fallbackWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: fallbackWork)
     }
     
     func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: Error) {
@@ -197,9 +213,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let errorCode = (error as NSError).code
         let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
-        
+
         return """
-        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"LOAD_FAILED","isRetryable":true}
+        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"LOAD_FAILED","isRetryable":true,"targeting":\(targetingJSONString())}
         """
     }
     private func cleanupBannerTimeout() {
@@ -223,7 +239,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     }
 
     // 배너 제약조건 설정
-    private func setupBannerConstraints(_ bannerAdView: BannerView) {
+    private func setupBannerConstraints(_ bannerAdView: AdManagerBannerView) {
         bannerAdView.translatesAutoresizingMaskIntoConstraints = false
         
         let constraints = [
@@ -343,7 +359,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
             return
         }
         
-        self.bannerAdView = BannerView(adSize: adaptiveSize)
+        self.bannerAdView = AdManagerBannerView(adSize: adaptiveSize)
         self.bannerAdView?.adUnitID = adUnit
         self.bannerAdView?.rootViewController = self
         self.bannerAdView?.delegate = self
@@ -351,8 +367,20 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         if let bannerAdView = self.bannerAdView {
             self.bannerContainer.addSubview(bannerAdView)
             self.setupBannerConstraints(bannerAdView)
-            
-            let request = Request()
+
+            bannerAdView.paidEventHandler = { [weak self] adValue in
+                guard let self = self else { return }
+                self.bannerPaidEventFallbackWorkItem?.cancel()
+                self.bannerPaidEventFallbackWorkItem = nil
+                var extra: [String: Any] = [:]
+                if let adValueDict = self.buildAdValueDict(adValue) { extra["adValue"] = adValueDict }
+                let successInfo = self.buildSuccessInfoJSON(adType: "banner", adUnit: self.currentBannerAdUnit ?? "", status: "success", responseInfo: self.bannerAdView?.responseInfo, extra: extra)
+                if let callbackFunction = self.bannerCallbackFunction {
+                    self.executeBannerCallback(callbackFunction, adType: "banner", status: "success", adUnit: self.currentBannerAdUnit ?? "", errorCode: 0, detailInfo: successInfo)
+                }
+            }
+
+            let request = makeAdRequest()
             bannerAdView.load(request)
         }
     }
@@ -401,11 +429,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         webView.evaluateJavaScriptSafely(script)
     }
     
-    private func createSimpleSuccessInfo(_ adType: String, adUnit: String) -> String {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"success"}
-        """
+    private func createSimpleSuccessInfo(_ adType: String, adUnit: String, responseInfo: ResponseInfo? = nil) -> String {
+        return buildSuccessInfoJSON(adType: adType, adUnit: adUnit, status: "success", responseInfo: responseInfo)
     }
     private func syncCookiesFromHTTPCookieStorage() {
         let cookies = HTTPCookieStorage.shared.cookies ?? []
@@ -2324,7 +2349,7 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             adLoadTimeoutWorkItem = timeoutWork
             DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
             
-            RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+            RewardedAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
                 guard let self = self else { return }
                 
                 self.adLoadTimeoutWorkItem?.cancel()
@@ -2349,16 +2374,24 @@ extension InAppBrowserViewController: WKNavigationDelegate {
                 self.rewardedAd = ad
                 self.currentAdUnitId = currentAdUnit
                 self.lastCallAdUnit = currentAdUnit
-                
+
+                ad?.paidEventHandler = { [weak self] adValue in
+                    self?.pendingRewardedAdValue = adValue
+                }
+
+                // 광고 메타데이터 수신 리스너 등록
+                DispatchQueue.main.async {
+                    ad?.adMetadataDelegate = self
+                }
+
                 self.showExistingRewardedAdUnified(adUnit: adUnit, callbackFunction: callbackFunction)
             }
         }
         
         private func createNoAdAvailableInfo(adType: String, adUnit: String) -> String {
-            
             let timestamp = Int(Date().timeIntervalSince1970 * 1000)
             return """
-            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"ad_not_ready","errorCategory":"AD_NOT_READY","isRetryable":true,"message":"No ad available to show"}
+            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"ad_not_ready","errorCategory":"AD_NOT_READY","isRetryable":true,"message":"No ad available to show","targeting":\(targetingJSONString())}
             """
         }
         private func showExistingRewardedAdUnified(adUnit: String, callbackFunction: String) {
@@ -2380,10 +2413,18 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             
             rewardedAd.present(from: self) { [weak self] in
                 guard let self = self else { return }
-                
+
                 self.isRewardEarned = true
-                
-                let rewardInfo = self.createSimpleRewardEarnedInfo(adType: "rewarded", adUnit: callbackAdUnit)
+
+                var extra: [String: Any] = ["eventType": "REWARD_EARNED"]
+                if let adValueDict = self.buildAdValueDict(self.pendingRewardedAdValue) {
+                    extra["adValue"] = adValueDict
+                }
+                self.pendingRewardedAdValue = nil
+                let rewardInfo = self.buildSuccessInfoJSON(adType: "rewarded", adUnit: callbackAdUnit,
+                                                          status: "reward_earned",
+                                                          responseInfo: self.rewardedAd?.responseInfo,
+                                                          extra: extra)
                 self.executeUnifiedCallback(
                     callbackFunction: callbackFunction,
                     adType: "rewarded",
@@ -2393,7 +2434,7 @@ extension InAppBrowserViewController: WKNavigationDelegate {
                     errorCode: 0,
                     detailInfo: rewardInfo
                 )
-                
+
             }
         }
         
@@ -2426,7 +2467,7 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             adLoadTimeoutWorkItem = timeoutWork
             DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
             
-            InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+            AdManagerInterstitialAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
                 guard let self = self else { return }
                 
                 self.adLoadTimeoutWorkItem?.cancel()
@@ -2450,7 +2491,11 @@ extension InAppBrowserViewController: WKNavigationDelegate {
                 
                 self.interstitialAd = ad
                 self.lastCallAdUnit = currentAdUnit
-                
+
+                ad?.paidEventHandler = { [weak self] adValue in
+                    self?.pendingInterstitialAdValue = adValue
+                }
+
                 self.showExistingInterstitialAdUnified(callbackFunction: callbackFunction, adUnit: currentAdUnit)
             }
         }
@@ -2675,8 +2720,38 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
 
                 case "syncCookies":
                     syncCookiesToDisk()
-                
-                    
+
+                // MARK: - 광고 타겟팅 (커스텀 키-밸류)
+                case "setAdTargeting":
+                    // { type: "setAdTargeting", targeting: { "gender": "male", "section": "sports" } }
+                    if let targeting = body["targeting"] as? [String: String] {
+                        if let jsonData = try? JSONSerialization.data(withJSONObject: targeting),
+                           let jsonString = String(data: jsonData, encoding: .utf8) {
+                            setAdTargeting(jsonString: jsonString)
+                        }
+                    }
+
+                case "updateAdTargeting":
+                    // { type: "updateAdTargeting", key: "gender", value: "female" }
+                    if let key = body["key"] as? String,
+                       let value = body["value"] as? String {
+                        updateAdTargeting(key: key, value: value)
+                    }
+
+                case "clearAdTargeting":
+                    clearAdTargeting()
+
+                case "getAdTargeting":
+                    // 현재 타겟팅 현황을 웹으로 반환
+                    if let callbackFunction = body["callbackFunction"] as? String {
+                        if let jsonData = try? JSONSerialization.data(withJSONObject: customAdTargeting),
+                           let jsonString = String(data: jsonData, encoding: .utf8) {
+                            let script = "if(typeof \(callbackFunction) === 'function') \(callbackFunction)(\(jsonString));"
+                            webView.evaluateJavaScriptSafely(script)
+                        }
+                    }
+
+
                 default:
                     break
                 }
@@ -2863,6 +2938,166 @@ extension InAppBrowserViewController {
             
             
         }
+
+    // MARK: - Ad Request 헬퍼 (커스텀 타겟팅 자동 적용)
+    func makeAdRequest() -> AdManagerRequest {
+        let request = AdManagerRequest()
+        if !customAdTargeting.isEmpty {
+            request.customTargeting = customAdTargeting
+        }
+        return request
+    }
+
+    private func targetingJSONString() -> String {
+        if customAdTargeting.isEmpty { return "{}" }
+        if let data = try? JSONSerialization.data(withJSONObject: customAdTargeting),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{}"
+    }
+
+    // MARK: - GADResponseInfo → Dictionary 변환 (웹 콜백용)
+    func buildResponseInfoDict(_ responseInfo: ResponseInfo?) -> [String: Any] {
+        guard let responseInfo = responseInfo else { return [:] }
+
+        var dict: [String: Any] = [:]
+
+        // responseIdentifier (Android의 getResponseId() 에 해당)
+        if let responseId = responseInfo.responseIdentifier {
+            dict["responseId"] = responseId
+        }
+
+        // extrasDictionary (Beta): 예약 광고에서 creative_id / line_item_id 제공
+        let extras = responseInfo.extras
+        if !extras.isEmpty {
+            var extrasDict: [String: Any] = [:]
+            if let creativeId = extras["creative_id"] { extrasDict["creative_id"] = creativeId }
+            if let lineItemId = extras["line_item_id"] { extrasDict["line_item_id"] = lineItemId }
+            // 나머지 extras 도 JSON 직렬화 가능한 값만 포함
+            for (key, val) in extras where key != "creative_id" && key != "line_item_id" {
+                extrasDict[key] = JSONSerialization.isValidJSONObject(["k": val]) ? val : "\(val)"
+            }
+            if !extrasDict.isEmpty { dict["extrasDictionary"] = extrasDict }
+        }
+
+        // loadedAdNetwork: 실제 광고를 채운 네트워크 정보
+        if let loaded = responseInfo.loadedAdNetworkResponseInfo {
+            var networkDict: [String: Any] = [:]
+            networkDict["adNetworkClassName"] = loaded.adNetworkClassName
+            if let sourceName = loaded.adSourceName         { networkDict["adSourceName"] = sourceName }
+            if let sourceId   = loaded.adSourceID           { networkDict["adSourceID"] = sourceId }
+            if let instName   = loaded.adSourceInstanceName { networkDict["adSourceInstanceName"] = instName }
+            if let instId     = loaded.adSourceInstanceID   { networkDict["adSourceInstanceID"] = instId }
+            networkDict["latencyMs"] = Int(loaded.latency * 1000)
+            // adUnitMapping: Ad Manager UI에서 설정한 네트워크 구성
+            if !loaded.adUnitMapping.isEmpty {
+                let safeMapping = loaded.adUnitMapping.compactMapValues { val -> Any? in
+                    JSONSerialization.isValidJSONObject(["k": val]) ? val : "\(val)"
+                }
+                if !safeMapping.isEmpty { networkDict["adUnitMapping"] = safeMapping }
+            }
+            if let err = loaded.error {
+                networkDict["error"] = ["code": (err as NSError).code, "message": err.localizedDescription]
+            }
+            dict["loadedAdNetwork"] = networkDict
+        }
+
+        // adNetworkInfoArray: 워터폴 전체 네트워크 시도 목록
+        let networkArray: [[String: Any]] = responseInfo.adNetworkInfoArray.map { net in
+            var n: [String: Any] = [:]
+            n["adNetworkClassName"] = net.adNetworkClassName
+            if let sn  = net.adSourceName         { n["adSourceName"] = sn }
+            if let si  = net.adSourceID           { n["adSourceID"] = si }
+            if let in_ = net.adSourceInstanceName { n["adSourceInstanceName"] = in_ }
+            if let ii  = net.adSourceInstanceID   { n["adSourceInstanceID"] = ii }
+            n["latencyMs"] = Int(net.latency * 1000)
+            if !net.adUnitMapping.isEmpty {
+                let safeMapping = net.adUnitMapping.compactMapValues { val -> Any? in
+                    JSONSerialization.isValidJSONObject(["k": val]) ? val : "\(val)"
+                }
+                if !safeMapping.isEmpty { n["adUnitMapping"] = safeMapping }
+            }
+            if let err = net.error {
+                n["error"] = ["code": (err as NSError).code, "message": err.localizedDescription]
+            }
+            return n
+        }
+        if !networkArray.isEmpty {
+            dict["adNetworkInfoArray"] = networkArray
+        }
+
+        return dict
+    }
+
+    private func buildAdValueDict(_ adValue: AdValue?) -> [String: Any]? {
+        guard let adValue = adValue else { return nil }
+        let valueMicros = NSDecimalNumber(decimal: adValue.value as Decimal).multiplying(byPowerOf10: 6).int64Value
+        return [
+            "valueMicros": valueMicros,
+            "currencyCode": adValue.currencyCode,
+            "precisionType": adValue.precision.rawValue
+        ]
+    }
+
+    /// responseInfo를 포함한 successInfo JSON 문자열 생성
+    func buildSuccessInfoJSON(adType: String, adUnit: String, status: String,
+                              responseInfo: ResponseInfo? = nil,
+                              extra: [String: Any] = [:]) -> String {
+        var dict: [String: Any] = [
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000),
+            "adType": adType,
+            "adUnit": adUnit,
+            "sdkVersion": Self.SDK_VERSION,
+            "status": status
+        ]
+        for (k, v) in extra { dict[k] = v }
+
+        let riDict = buildResponseInfoDict(responseInfo)
+        if !riDict.isEmpty { dict["responseInfo"] = riDict }
+        if !customAdTargeting.isEmpty { dict["targeting"] = customAdTargeting }
+
+        if let data = try? JSONSerialization.data(withJSONObject: dict),
+           let str  = String(data: data, encoding: .utf8) {
+            return str
+        }
+        // fallback
+        return "{\"timestamp\":\(dict["timestamp"]!),\"adType\":\"\(adType)\",\"adUnit\":\"\(adUnit)\",\"status\":\"\(status)\"}"
+    }
+
+
+
+    // 웹에서 타겟팅 키-밸류 설정
+    func setAdTargeting(jsonString: String) {
+        guard let data = jsonString.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return
+        }
+        customAdTargeting = dict
+    }
+
+    // 웹에서 타겟팅 키-밸류 추가/업데이트
+    func updateAdTargeting(key: String, value: String) {
+        customAdTargeting[key] = value
+    }
+
+    // 타겟팅 초기화
+    func clearAdTargeting() {
+        customAdTargeting = [:]
+    }
+
+    // 광고 메타데이터를 웹으로 전달
+    func notifyAdMetadata(_ metadata: [String: Any], adType: String, callbackFunction: String) {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: metadata),
+              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+        let escaped = jsonString.replacingOccurrences(of: "'", with: "\\'")
+        let script = "if(typeof \(callbackFunction) === 'function') \(callbackFunction)('\(adType)', \(jsonString));"
+        DispatchQueue.main.async {
+            self.webView.evaluateJavaScriptSafely(script)
+        }
+    }
+
+
     func showRewardedAd(adUnit: String, callbackFunction: String) {
         isUsingUnifiedCallback = false
         currentCallbackType = "legacy"
@@ -2934,11 +3169,12 @@ extension InAppBrowserViewController {
         return nil
     }
     
-    private func createDismissedWithRewardInfo(adType: String, adUnit: String) -> String {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"dismissed_with_reward","eventType":"AD_DISMISSED_WITH_REWARD","message":"Ad was dismissed after reward was earned"}
-        """
+    private func createDismissedWithRewardInfo(adType: String, adUnit: String, responseInfo: ResponseInfo? = nil, adValue: AdValue? = nil) -> String {
+        var extra: [String: Any] = ["eventType": "AD_DISMISSED_WITH_REWARD",
+                                    "message": "Ad was dismissed after reward was earned"]
+        if let adValueDict = buildAdValueDict(adValue) { extra["adValue"] = adValueDict }
+        return buildSuccessInfoJSON(adType: adType, adUnit: adUnit, status: "dismissed_with_reward",
+                                   responseInfo: responseInfo, extra: extra)
     }
     private func loadNewRewardedAd(adUnit: String, callbackFunction: String) {
         if isLoadingCoverEnabled {
@@ -2970,7 +3206,7 @@ extension InAppBrowserViewController {
         adLoadTimeoutWorkItem = timeoutWork
         DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
-        RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        RewardedAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             self.adLoadTimeoutWorkItem?.cancel()
@@ -3009,6 +3245,10 @@ extension InAppBrowserViewController {
             
             self.rewardedAd = ad
             self.currentAdUnitId = currentAdUnit
+            // 광고 메타데이터 수신 리스너 등록
+            DispatchQueue.main.async {
+                ad?.adMetadataDelegate = self
+            }
             self.showExistingRewardedAd(callbackFunction: callbackFunction)
         }
     }
@@ -3043,7 +3283,7 @@ extension InAppBrowserViewController {
         adLoadTimeoutWorkItem = timeoutWork
         DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
-        InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        AdManagerInterstitialAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             self.adLoadTimeoutWorkItem?.cancel()
@@ -3116,7 +3356,7 @@ extension InAppBrowserViewController {
         adLoadTimeoutWorkItem = timeoutWork
         DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
-        RewardedInterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        RewardedInterstitialAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             self.adLoadTimeoutWorkItem?.cancel()
@@ -3204,7 +3444,7 @@ extension InAppBrowserViewController {
         RunLoop.main.add(timer, forMode: .common)
         adLoadTimer = timer
         
-        RewardedInterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        RewardedInterstitialAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             self.hideLoadingCover()
@@ -3284,7 +3524,7 @@ extension InAppBrowserViewController {
     private func createSimpleCancelInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"cancelled","eventType":"AD_CANCELLED","message":"User cancelled the ad"}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"cancelled","eventType":"AD_CANCELLED","message":"User cancelled the ad","targeting":\(targetingJSONString())}
         """
     }
     
@@ -3292,9 +3532,9 @@ extension InAppBrowserViewController {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
         let errorCode = (error as NSError).code
-        
+
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"PRESENT_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"PRESENTATION_FAILED","isRetryable":false}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"PRESENT_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"PRESENTATION_FAILED","isRetryable":false,"targeting":\(targetingJSONString())}
         """
     }
 }
@@ -3577,7 +3817,7 @@ extension InAppBrowserViewController {
     private func createTimeoutErrorInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"timeout","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(preloadTimeoutMs)}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"timeout","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(preloadTimeoutMs),"targeting":\(targetingJSONString())}
         """
     }
     
@@ -3621,14 +3861,36 @@ extension InAppBrowserViewController {
         }
     }
     private func createDetailedLoadErrorInfo(error: Error, adType: String, adUnit: String) -> String {
-            let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-            let errorCode = (error as NSError).code
-            let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
-            
-            return """
-            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"\(categorizeAdError(errorCode))","isRetryable":\(isRetryableError(errorCode) ? "true" : "false")}
-            """
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let nsError = error as NSError
+        let errorCode = nsError.code
+        let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
+
+        // 실패 시에도 GADErrorUserInfoKeyResponseInfo에서 ResponseInfo 꺼낼 수 있음
+        let failedResponseInfo = nsError.userInfo[GADErrorUserInfoKeyResponseInfo] as? ResponseInfo
+        let riDict = buildResponseInfoDict(failedResponseInfo)
+
+        var dict: [String: Any] = [
+            "timestamp": timestamp,
+            "adType": adType,
+            "adUnit": adUnit,
+            "sdkVersion": Self.SDK_VERSION,
+            "errorType": "LOAD_ERROR",
+            "errorCode": errorCode,
+            "message": errorMessage,
+            "errorCategory": categorizeAdError(errorCode),
+            "isRetryable": isRetryableError(errorCode)
+        ]
+        if !riDict.isEmpty { dict["responseInfo"] = riDict }
+        if !customAdTargeting.isEmpty { dict["targeting"] = customAdTargeting }
+
+        if let jsonData = try? JSONSerialization.data(withJSONObject: dict),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
         }
+        return "{\"timestamp\":\(timestamp),\"adType\":\"\(adType)\",\"adUnit\":\"\(adUnit)\",\"errorCode\":\(errorCode),\"message\":\"\(errorMessage)\"}"
+    }
+
     private func loadPreloadedRewardedAd(adUnit: String, callbackFunction: String, adUnitIndex: Int) {
         isPreloadingRewardedAd = true
         
@@ -3648,7 +3910,7 @@ extension InAppBrowserViewController {
         
         DispatchQueue.main.asyncAfter(deadline: .now() + timeoutInterval, execute: timeoutWork)
         
-        RewardedAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        RewardedAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             timeoutWork.cancel()
@@ -3664,23 +3926,26 @@ extension InAppBrowserViewController {
             
             self.preloadedRewardedAd = ad
             self.preloadedRewardedAdUnit = currentAdUnit
-            
-            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_rewarded", adUnit: currentAdUnit)
+
+            ad?.paidEventHandler = { [weak self] adValue in
+                self?.pendingPreloadedRewardedAdValue = adValue
+            }
+
+            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_rewarded", adUnit: currentAdUnit, responseInfo: ad?.responseInfo)
             self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_rewarded", status: "success", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: detailedSuccessInfo)
         }
     }
     
-    private func createDetailedSuccessInfo(adType: String, adUnit: String) -> String {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"success"}
-        """
+    private func createDetailedSuccessInfo(adType: String, adUnit: String, responseInfo: ResponseInfo? = nil, adValue: AdValue? = nil) -> String {
+        var extra: [String: Any] = [:]
+        if let adValueDict = buildAdValueDict(adValue) { extra["adValue"] = adValueDict }
+        return buildSuccessInfoJSON(adType: adType, adUnit: adUnit, status: "success", responseInfo: responseInfo, extra: extra.isEmpty ? [:] : extra)
     }
     
     private func createNoPreloadedAdInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"no_preloaded_ad","errorCategory":"NO_PRELOADED_AD","isRetryable":false,"message":"No preloaded ad available"}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"no_preloaded_ad","errorCategory":"NO_PRELOADED_AD","isRetryable":false,"message":"No preloaded ad available","targeting":\(targetingJSONString())}
         """
     }
     
@@ -3702,19 +3967,26 @@ extension InAppBrowserViewController {
         
         preloadedAd.present(from: self) { [weak self] in
             guard let self = self else { return }
-            
+
             self.isPreloadedRewardEarned = true
-            
-            let rewardInfo = self.createSimpleRewardEarnedInfo(adType: "show_preloaded_rewarded", adUnit: adUnitForCallback)
+
+            var extra: [String: Any] = ["eventType": "REWARD_EARNED"]
+            if let adValueDict = self.buildAdValueDict(self.pendingPreloadedRewardedAdValue) {
+                extra["adValue"] = adValueDict
+            }
+            self.pendingPreloadedRewardedAdValue = nil
+            let rewardInfo = self.buildSuccessInfoJSON(adType: "show_preloaded_rewarded", adUnit: adUnitForCallback,
+                                                      status: "reward_earned",
+                                                      responseInfo: self.preloadedRewardedAd?.responseInfo,
+                                                      extra: extra)
             self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "show_preloaded_rewarded", status: "reward_earned", adUnit: adUnitForCallback, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: rewardInfo)
         }
     }
     
-    private func createSimpleRewardEarnedInfo(adType: String, adUnit: String) -> String {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"reward_earned","eventType":"REWARD_EARNED"}
-        """
+    private func createSimpleRewardEarnedInfo(adType: String, adUnit: String, responseInfo: ResponseInfo? = nil) -> String {
+        return buildSuccessInfoJSON(adType: adType, adUnit: adUnit, status: "reward_earned",
+                                   responseInfo: responseInfo,
+                                   extra: ["eventType": "REWARD_EARNED"])
     }
     
     func preloadInterstitialAd(adUnit: String, callbackFunction: String) {
@@ -3761,7 +4033,7 @@ extension InAppBrowserViewController {
         
         DispatchQueue.main.asyncAfter(deadline: .now() + timeoutInterval, execute: timeoutWork)
         
-        InterstitialAd.load(with: currentAdUnit, request: Request()) { [weak self] ad, error in
+        AdManagerInterstitialAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
             guard let self = self else { return }
             
             timeoutWork.cancel()
@@ -3777,8 +4049,12 @@ extension InAppBrowserViewController {
             
             self.preloadedInterstitialAd = ad
             self.preloadedInterstitialAdUnit = currentAdUnit
-            
-            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_interstitial", adUnit: currentAdUnit)
+
+            ad?.paidEventHandler = { [weak self] adValue in
+                self?.pendingPreloadedInterstitialAdValue = adValue
+            }
+
+            let detailedSuccessInfo = self.createDetailedSuccessInfo(adType: "preload_interstitial", adUnit: currentAdUnit, responseInfo: ad?.responseInfo)
             self.executeUnifiedCallback(callbackFunction: callbackFunction, adType: "preload_interstitial", status: "success", adUnit: currentAdUnit, sdkVersion: InAppBrowserViewController.SDK_VERSION, errorCode: 0, detailInfo: detailedSuccessInfo)
         }
     }
@@ -3902,7 +4178,7 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
         let adname = currentAdUnitId
         let adnum = adUnitIndexDisplay
         
-        if ad is InterstitialAd {
+        if ad is AdManagerInterstitialAd {
             adType = "interstitial"
         } else if ad is RewardedInterstitialAd {
             adType = "rewarded_interstitial"
@@ -3914,10 +4190,17 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
         let adUnit = isPreloadedAd ? (preloadedRewardedAdUnit ?? preloadedInterstitialAdUnit ?? adname) : adname
         
         
-        if ad is InterstitialAd {
+        if ad is AdManagerInterstitialAd {
             if let callbackFunction = callbackToUse {
                 if isUsingUnifiedCallback {
-                    let successInfo = createDetailedSuccessInfo(adType: adType, adUnit: adUnit)
+                    let adValue = isPreloadedAd ? pendingPreloadedInterstitialAdValue : pendingInterstitialAdValue
+                    let successInfo = createDetailedSuccessInfo(
+                        adType: isPreloadedAd ? "show_preloaded_interstitial" : adType,
+                        adUnit: adUnit,
+                        responseInfo: (ad as? AdManagerInterstitialAd)?.responseInfo ?? (ad as? RewardedAd)?.responseInfo,
+                        adValue: adValue
+                    )
+                    if isPreloadedAd { pendingPreloadedInterstitialAdValue = nil } else { pendingInterstitialAdValue = nil }
                     executeUnifiedCallback(
                         callbackFunction: callbackFunction,
                         adType: isPreloadedAd ? "show_preloaded_interstitial" : adType,
@@ -3931,7 +4214,7 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
                     webView.evaluateJavaScriptSafely("javascript:\(callbackFunction)(\"\(adType)\", \"success\", \"\(adUnit)\", \(adnum));")
                 }
             }
-            
+
             if isPreloadedAd {
                 preloadedInterstitialAd = nil
                 preloadedInterstitialAdUnit = nil
@@ -3941,7 +4224,7 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
                 adUnitIndexCall = 0
                 adUnitIndexDisplay = 1
             }
-            
+
             isUsingUnifiedCallback = false
             currentCallbackType = "legacy"
             return
@@ -3950,10 +4233,14 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
         if let callbackFunction = callbackToUse {
             if rewardEarned {
                 if isUsingUnifiedCallback {
+                    let adValue = isPreloadedAd ? pendingPreloadedRewardedAdValue : pendingRewardedAdValue
                     let rewardInfo = createDismissedWithRewardInfo(
                         adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
-                        adUnit: adUnit
+                        adUnit: adUnit,
+                        responseInfo: (ad as? RewardedAd)?.responseInfo,
+                        adValue: adValue
                     )
+                    if isPreloadedAd { pendingPreloadedRewardedAdValue = nil } else { pendingRewardedAdValue = nil }
                     executeUnifiedCallback(
                         callbackFunction: callbackFunction,
                         adType: isPreloadedAd ? "show_preloaded_rewarded" : adType,
@@ -4010,7 +4297,7 @@ extension InAppBrowserViewController: FullScreenContentDelegate {
     
     func ad(_ ad: FullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
         var adType = "reward"
-        if ad is InterstitialAd {
+        if ad is AdManagerInterstitialAd {
             adType = "interstitial"
         } else if ad is RewardedInterstitialAd {
             adType = "rewarded_interstitial"
@@ -4099,5 +4386,77 @@ extension Bundle {
         
         return currentBundle
         #endif
+    }
+}
+
+// MARK: - AdMetadataDelegate (광고 메타데이터 수신 → 웹으로 전달)
+extension InAppBrowserViewController: @MainActor AdMetadataDelegate {
+    @MainActor
+    func adMetadataDidChange(_ ad: any AdMetadataProvider) {
+        let metadata = ad.adMetadata ?? [:]
+        var metaDict: [String: Any] = [:]
+
+        if let adId = metadata[GADAdMetadataKey(rawValue: "AdId")] as? String, !adId.isEmpty {
+            metaDict["AdId"] = adId
+        }
+        if let adTitle = metadata[GADAdMetadataKey(rawValue: "AdTitle")] as? String, !adTitle.isEmpty {
+            metaDict["AdTitle"] = adTitle
+        }
+        if let creativeId = metadata[GADAdMetadataKey(rawValue: "CreativeId")] as? String, !creativeId.isEmpty {
+            metaDict["CreativeId"] = creativeId
+        }
+        if let adSystem = metadata[GADAdMetadataKey(rawValue: "AdSystem")] as? String, !adSystem.isEmpty {
+            metaDict["AdSystem"] = adSystem
+        }
+        if let dealId = metadata[GADAdMetadataKey(rawValue: "DealId")] as? String, !dealId.isEmpty {
+            metaDict["DealId"] = dealId
+        }
+        // 재생 길이 (ms + sec 함께 제공)
+        if let durationMs = metadata[GADAdMetadataKey(rawValue: "CreativeDurationMs")] as? Int {
+            metaDict["CreativeDurationMs"] = durationMs
+            if durationMs > 0 {
+                metaDict["CreativeDurationSec"] = durationMs / 1000
+            }
+        }
+        // TraffickingParameters: raw 문자열 + 파싱된 딕셔너리 함께 제공
+        if let traffickingParams = metadata[GADAdMetadataKey(rawValue: "TraffickingParameters")] as? String,
+           !traffickingParams.isEmpty {
+            metaDict["TraffickingParameters"] = traffickingParams
+            var parsedParams: [String: String] = [:]
+            for pair in traffickingParams.components(separatedBy: "&") {
+                let parts = pair.components(separatedBy: "=")
+                if parts.count == 2, !parts[0].isEmpty {
+                    parsedParams[parts[0]] = parts[1]
+                }
+            }
+            if !parsedParams.isEmpty {
+                metaDict["TraffickingParametersParsed"] = parsedParams
+            }
+        }
+        if let mediaURL = metadata[GADAdMetadataKey(rawValue: "MediaURL")] as? String, !mediaURL.isEmpty {
+            metaDict["MediaURL"] = mediaURL
+        }
+        // Wrappers: VAST 래퍼 광고일 때만 존재 (가장 안쪽 → 가장 바깥쪽 순)
+        if let wrappers = metadata[GADAdMetadataKey(rawValue: "Wrappers")] as? [[String: String]], !wrappers.isEmpty {
+            var wrapperList: [[String: String]] = []
+            for wrapper in wrappers {
+                var w: [String: String] = [:]
+                if let wAdId       = wrapper["AdId"],       !wAdId.isEmpty       { w["AdId"] = wAdId }
+                if let wAdSystem   = wrapper["AdSystem"],   !wAdSystem.isEmpty   { w["AdSystem"] = wAdSystem }
+                if let wCreativeId = wrapper["CreativeId"], !wCreativeId.isEmpty { w["CreativeId"] = wCreativeId }
+                wrapperList.append(w)
+            }
+            metaDict["Wrappers"] = wrapperList
+            metaDict["WrapperDepth"] = wrapperList.count
+        }
+
+        guard !metaDict.isEmpty,
+              let jsonData = try? JSONSerialization.data(withJSONObject: metaDict),
+              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+
+        let script = "if(typeof window.onAdMetadataReceived === 'function') window.onAdMetadataReceived(\(jsonString));"
+        DispatchQueue.main.async {
+            self.webView.evaluateJavaScriptSafely(script)
+        }
     }
 }
