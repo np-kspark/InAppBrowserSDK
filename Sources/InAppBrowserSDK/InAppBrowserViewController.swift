@@ -7,7 +7,7 @@ import Foundation
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.2.3"
+    static let SDK_VERSION = "1.2.5"
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
@@ -102,6 +102,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var bannerTimeoutWorkItem: DispatchWorkItem?
 
     private var isLoadingBanner: Bool = false
+    // window.open('about:blank') 처리용 임시 팝업 웹뷰
+    private var popupWebView: WKWebView?
     
     init(config: InAppBrowserConfig) {
         self.config = config
@@ -133,8 +135,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
                         self.bannerContainer.subviews.forEach { $0.removeFromSuperview() }
                         self.bannerAdView = nil
                     }
-                    
-                    self.collapseBannerArea()
+
+                    self.collapseBannerArea(animated: false)
                 }
                 
                 let timeoutErrorInfo = self.createBannerTimeoutErrorInfo(adUnit: adUnit)
@@ -192,10 +194,16 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
         
         cancelBannerTimeout()
-        
+
         isLoadingBanner = false
-        
-        
+
+        // 로드 실패 시 배너 뷰 제거 및 영역 즉시 축소 (애니메이션 없음)
+        if self.bannerAdView != nil {
+            self.bannerContainer.subviews.forEach { $0.removeFromSuperview() }
+            self.bannerAdView = nil
+        }
+        self.collapseBannerArea(animated: false)
+
         let errorCode = (error as NSError).code
         let errorMessage = error.localizedDescription
         let detailedErrorInfo = createBannerLoadErrorInfo(error: error, adUnit: currentBannerAdUnit ?? "")
@@ -223,7 +231,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         isLoadingBanner = false
         isBannerRequestTimedOut = false
     }
-    // 배너 영역 설정
+    
     private func setupBannerArea() {
         self.bannerContainer.isHidden = false
         self.bannerContainer.alpha = 1.0
@@ -238,7 +246,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         self.view.layoutIfNeeded()
     }
 
-    // 배너 제약조건 설정
+    
     private func setupBannerConstraints(_ bannerAdView: AdManagerBannerView) {
         bannerAdView.translatesAutoresizingMaskIntoConstraints = false
         
@@ -297,23 +305,32 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
     }
     
-    private func collapseBannerArea() {
+    private func collapseBannerArea(animated: Bool = true) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
+
             if self.bannerContainer != nil {
                 self.bannerContainer.constraints.forEach { constraint in
                     if constraint.firstAttribute == .height {
                         constraint.constant = 0
                     }
                 }
-                
-                UIView.animate(withDuration: 0.3, animations: {
-                    self.view.layoutIfNeeded()
-                }) { _ in
+
+                let finish = {
                     self.bannerContainer.isHidden = true
                     self.isBannerVisible = false
                     self.updateBannerVisibilityInJS()
+                }
+
+                if animated {
+                    UIView.animate(withDuration: 0.3, animations: {
+                        self.view.layoutIfNeeded()
+                    }) { _ in
+                        finish()
+                    }
+                } else {
+                    self.view.layoutIfNeeded()
+                    finish()
                 }
             }
         }
@@ -344,7 +361,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
             self.bannerCallbackFunction = callbackFunction
             
             self.setupBannerArea()
-            
+
             self.createBannerAdView(for: currentAdUnit, callbackFunction: callbackFunction)
         }
     }
@@ -355,6 +372,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         
         if isAdSizeEqualToSize(size1: adaptiveSize, size2: AdSizeInvalid) {
             self.cancelBannerTimeout()
+            self.isLoadingBanner = false
+            self.collapseBannerArea(animated: false)
             self.executeBannerCallback(callbackFunction, adType: "banner", status: "error", adUnit: adUnit, errorCode: -3001, detailInfo: "Invalid ad size")
             return
         }
@@ -1360,23 +1379,14 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
     }
 
+    // 등록 도메인(eTLD+1) 기준으로 반환. checkSameDomain과 동일한 판정 기준 사용.
+    // 예: https://m.nextpaper.co.kr/path → nextpaper.co.kr
     private func getRootDomain(from urlString: String) -> String {
         guard let url = URL(string: urlString),
-              let host = url.host else {
+              let host = url.host?.lowercased() else {
             return ""
         }
-        
-        var cleanHost = host
-        if cleanHost.hasPrefix("www.") {
-            cleanHost = String(cleanHost.dropFirst(4))
-        }
-        
-        let components = cleanHost.components(separatedBy: ".")
-        if let firstComponent = components.first {
-            return firstComponent
-        }
-        
-        return cleanHost
+        return registrableDomain(of: host)
     }
     
     private func addCacheBusterToUrl(_ urlString: String) -> String {
@@ -1877,8 +1887,31 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         
         let urlString = url.absoluteString
         let currentTime = Date().timeIntervalSince1970
-        
-        
+
+        if webView == popupWebView {
+            if urlString == "about:blank" || urlString.isEmpty {
+                decisionHandler(.allow)
+                return
+            }
+            decisionHandler(.cancel)
+
+            let mainHost = self.webView.url?.host?.lowercased()
+            let popupHost = url.host?.lowercased()
+            if checkSameDomain(currentHost: mainHost, newHost: popupHost) {
+                self.webView.load(URLRequest(url: url))
+            } else {
+                isMovingToExternalApp = true
+                lastExternalAppTime = currentTime
+                pendingExternalURL = urlString
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.destroyPopupWebView()
+            }
+            return
+        }
+
         if navigationAction.navigationType == .backForward {
             isNavigatingBack = true
             
@@ -2002,12 +2035,12 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         }
         
         if navigationAction.navigationType == .linkActivated {
-            
+
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
             decisionHandler(.cancel)
             return
         }
-        
+
         decisionHandler(.allow)
     }
 
@@ -2076,24 +2109,38 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         guard let current = currentHost, let new = newHost else {
             return false
         }
-        
+
         if current == new {
             return true
         }
-        
-        let currentParts = current.components(separatedBy: ".")
-        let newParts = new.components(separatedBy: ".")
-        
-        guard currentParts.count >= 2, newParts.count >= 2 else {
-            return false
+
+        return registrableDomain(of: current) == registrableDomain(of: new)
+    }
+
+    // co.kr 같은 2단계 공용 접미사(public suffix)를 고려해 등록 도메인(eTLD+1)을 추출한다.
+    // 예: nextpaper.co.kr → nextpaper.co.kr / m.nextpaper.co.kr → nextpaper.co.kr / daum.co.kr → daum.co.kr
+    private func registrableDomain(of host: String) -> String {
+        let twoLevelSuffixes: Set<String> = [
+            // 한국
+            "co.kr", "or.kr", "ne.kr", "re.kr", "pe.kr", "go.kr", "ac.kr",
+            "hs.kr", "ms.kr", "es.kr", "sc.kr", "kg.kr",
+            // 주요 국가
+            "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+            "co.uk", "org.uk", "ac.uk", "gov.uk",
+            "com.au", "net.au", "org.au",
+            "com.cn", "net.cn", "org.cn",
+            "com.tw", "com.hk", "com.sg", "com.br", "com.mx",
+            "co.in", "co.id", "co.th", "com.vn"
+        ]
+
+        let parts = host.components(separatedBy: ".")
+        guard parts.count >= 2 else { return host }
+
+        let lastTwo = parts.suffix(2).joined(separator: ".")
+        if twoLevelSuffixes.contains(lastTwo), parts.count >= 3 {
+            return parts.suffix(3).joined(separator: ".")
         }
-        
-        let currentDomain = currentParts.suffix(2).joined(separator: ".")
-        let newDomain = newParts.suffix(2).joined(separator: ".")
-        
-        let isSameBaseDomain = currentDomain == newDomain
-        
-        return isSameBaseDomain
+        return lastTwo
     }
     private func handleExternalApp(url: URL, appName: String, appStoreURL: String?) {
         isMovingToExternalApp = true
@@ -2178,26 +2225,22 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         
-        guard let url = navigationAction.request.url else {
+        let requestURL = navigationAction.request.url
+        let requestURLString = requestURL?.absoluteString ?? ""
+        
+        if requestURL == nil || requestURLString.isEmpty || requestURLString.hasPrefix("about:") {
+            return makePopupWebView(with: configuration)
+        }
+
+        guard let url = requestURL else { return nil }
+        let urlString = requestURLString
+
+        if urlString.hasPrefix("javascript:") {
             return nil
         }
-        
-        let urlString = url.absoluteString
-        let isWindowOpen = navigationAction.navigationType == .other
-       
-        
+
         let currentHost = webView.url?.host?.lowercased()
         let newHost = url.host?.lowercased()
-        
-        
-        let isJavaScriptLink = urlString.hasPrefix("javascript:") || urlString.hasPrefix("about:")
-        
-        if isJavaScriptLink {
-            DispatchQueue.main.async {
-                webView.load(URLRequest(url: url))
-            }
-            return nil
-        }
         
         let isSameDomain = checkSameDomain(currentHost: currentHost, newHost: newHost)
         
@@ -2222,9 +2265,48 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         }
         return nil
     }
+
+
+    private func makePopupWebView(with configuration: WKWebViewConfiguration) -> WKWebView {
+        destroyPopupWebView()
+
+        let popup = WKWebView(frame: .zero, configuration: configuration)
+        popup.isHidden = true
+        popup.navigationDelegate = self
+        popup.uiDelegate = self
+        view.addSubview(popup)
+        popupWebView = popup
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self, weak popup] in
+            guard let self = self, let popup = popup, popup == self.popupWebView else { return }
+            self.destroyPopupWebView()
+        }
+        return popup
+    }
+
+    private func destroyPopupWebView() {
+        popupWebView?.stopLoading()
+        popupWebView?.removeFromSuperview()
+        popupWebView = nil
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        if webView == popupWebView {
+            destroyPopupWebView()
+        }
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         hideLoadingCover()
-        
+
+        let nsError = error as NSError
+        // -999: 사용자/정책에 의한 취소(NSURLErrorCancelled)
+        // 102: decidePolicyFor에서 .cancel 처리(WKErrorFrameLoadInterruptedByPolicyChange)
+        // → 외부 브라우저로 보낸 정상 케이스이므로 초기 URL 리로드 금지
+        if nsError.code == NSURLErrorCancelled || nsError.code == 102 {
+            return
+        }
+
         if let urlString = config.url, let optimizedURL = URL(string: optimizeURL(urlString)) {
             let request = URLRequest(url: optimizedURL)
             webView.load(request)
@@ -2379,7 +2461,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
                     self?.pendingRewardedAdValue = adValue
                 }
 
-                // 광고 메타데이터 수신 리스너 등록
                 DispatchQueue.main.async {
                     ad?.adMetadataDelegate = self
                 }
@@ -2721,9 +2802,8 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                 case "syncCookies":
                     syncCookiesToDisk()
 
-                // MARK: - 광고 타겟팅 (커스텀 키-밸류)
                 case "setAdTargeting":
-                    // { type: "setAdTargeting", targeting: { "gender": "male", "section": "sports" } }
+                    
                     if let targeting = body["targeting"] as? [String: String] {
                         if let jsonData = try? JSONSerialization.data(withJSONObject: targeting),
                            let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -2732,7 +2812,7 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                     }
 
                 case "updateAdTargeting":
-                    // { type: "updateAdTargeting", key: "gender", value: "female" }
+                    
                     if let key = body["key"] as? String,
                        let value = body["value"] as? String {
                         updateAdTargeting(key: key, value: value)
@@ -2742,7 +2822,7 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                     clearAdTargeting()
 
                 case "getAdTargeting":
-                    // 현재 타겟팅 현황을 웹으로 반환
+                    
                     if let callbackFunction = body["callbackFunction"] as? String {
                         if let jsonData = try? JSONSerialization.data(withJSONObject: customAdTargeting),
                            let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -2939,7 +3019,7 @@ extension InAppBrowserViewController {
             
         }
 
-    // MARK: - Ad Request 헬퍼 (커스텀 타겟팅 자동 적용)
+    
     func makeAdRequest() -> AdManagerRequest {
         let request = AdManagerRequest()
         if !customAdTargeting.isEmpty {
