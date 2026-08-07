@@ -7,7 +7,11 @@ import Foundation
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.2.5"
+    static let SDK_VERSION = "1.2.6"
+    static var GOOGLE_SDK_VERSION: String {
+        let v = MobileAds.shared.versionNumber
+        return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
     
     private var webView: WKWebView!
     private var loadingCover: UIView!
@@ -27,7 +31,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var adLoadTimeoutWorkItem: DispatchWorkItem?
     private var isAdRequestTimeOut: Bool = false
 
-    // 웹에서 설정한 커스텀 타겟팅 키-밸류 저장소
     private var customAdTargeting: [String: String] = [:]
     
     private var adUnitIndexCall: Int = 0
@@ -102,7 +105,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var bannerTimeoutWorkItem: DispatchWorkItem?
 
     private var isLoadingBanner: Bool = false
-    // window.open('about:blank') 처리용 임시 팝업 웹뷰
     private var popupWebView: WKWebView?
     
     init(config: InAppBrowserConfig) {
@@ -158,7 +160,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private func createBannerTimeoutErrorInfo(adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"TIMEOUT","errorCode":-1001,"message":"Banner ad load timeout after \(BANNER_LOAD_TIMEOUT_INTERVAL) seconds","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(Int(BANNER_LOAD_TIMEOUT_INTERVAL * 1000)),"targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","errorType":"TIMEOUT","errorCode":-1001,"message":"Banner ad load timeout after \(BANNER_LOAD_TIMEOUT_INTERVAL) seconds","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(Int(BANNER_LOAD_TIMEOUT_INTERVAL * 1000)),"targeting":\(targetingJSONString())}
         """
     }
     public func setBannerHeight(_ newHeight: Int) {
@@ -197,7 +199,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
 
         isLoadingBanner = false
 
-        // 로드 실패 시 배너 뷰 제거 및 영역 즉시 축소 (애니메이션 없음)
         if self.bannerAdView != nil {
             self.bannerContainer.subviews.forEach { $0.removeFromSuperview() }
             self.bannerAdView = nil
@@ -223,7 +224,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
 
         return """
-        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"LOAD_FAILED","isRetryable":true,"targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"banner","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","errorType":"LOAD_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"LOAD_FAILED","isRetryable":true,"targeting":\(targetingJSONString())}
         """
     }
     private func cleanupBannerTimeout() {
@@ -1379,8 +1380,6 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
     }
 
-    // 등록 도메인(eTLD+1) 기준으로 반환. checkSameDomain과 동일한 판정 기준 사용.
-    // 예: https://m.nextpaper.co.kr/path → nextpaper.co.kr
     private func getRootDomain(from urlString: String) -> String {
         guard let url = URL(string: urlString),
               let host = url.host?.lowercased() else {
@@ -2117,14 +2116,10 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         return registrableDomain(of: current) == registrableDomain(of: new)
     }
 
-    // co.kr 같은 2단계 공용 접미사(public suffix)를 고려해 등록 도메인(eTLD+1)을 추출한다.
-    // 예: nextpaper.co.kr → nextpaper.co.kr / m.nextpaper.co.kr → nextpaper.co.kr / daum.co.kr → daum.co.kr
     private func registrableDomain(of host: String) -> String {
         let twoLevelSuffixes: Set<String> = [
-            // 한국
             "co.kr", "or.kr", "ne.kr", "re.kr", "pe.kr", "go.kr", "ac.kr",
             "hs.kr", "ms.kr", "es.kr", "sc.kr", "kg.kr",
-            // 주요 국가
             "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
             "co.uk", "org.uk", "ac.uk", "gov.uk",
             "com.au", "net.au", "org.au",
@@ -2300,9 +2295,6 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         hideLoadingCover()
 
         let nsError = error as NSError
-        // -999: 사용자/정책에 의한 취소(NSURLErrorCancelled)
-        // 102: decidePolicyFor에서 .cancel 처리(WKErrorFrameLoadInterruptedByPolicyChange)
-        // → 외부 브라우저로 보낸 정상 케이스이므로 초기 URL 리로드 금지
         if nsError.code == NSURLErrorCancelled || nsError.code == 102 {
             return
         }
@@ -2472,7 +2464,7 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         private func createNoAdAvailableInfo(adType: String, adUnit: String) -> String {
             let timestamp = Int(Date().timeIntervalSince1970 * 1000)
             return """
-            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"ad_not_ready","errorCategory":"AD_NOT_READY","isRetryable":true,"message":"No ad available to show","targeting":\(targetingJSONString())}
+            {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","status":"ad_not_ready","errorCategory":"AD_NOT_READY","isRetryable":true,"message":"No ad available to show","targeting":\(targetingJSONString())}
             """
         }
         private func showExistingRewardedAdUnified(adUnit: String, callbackFunction: String) {
@@ -3037,31 +3029,26 @@ extension InAppBrowserViewController {
         return "{}"
     }
 
-    // MARK: - GADResponseInfo → Dictionary 변환 (웹 콜백용)
     func buildResponseInfoDict(_ responseInfo: ResponseInfo?) -> [String: Any] {
         guard let responseInfo = responseInfo else { return [:] }
 
         var dict: [String: Any] = [:]
 
-        // responseIdentifier (Android의 getResponseId() 에 해당)
         if let responseId = responseInfo.responseIdentifier {
             dict["responseId"] = responseId
         }
 
-        // extrasDictionary (Beta): 예약 광고에서 creative_id / line_item_id 제공
         let extras = responseInfo.extras
         if !extras.isEmpty {
             var extrasDict: [String: Any] = [:]
             if let creativeId = extras["creative_id"] { extrasDict["creative_id"] = creativeId }
             if let lineItemId = extras["line_item_id"] { extrasDict["line_item_id"] = lineItemId }
-            // 나머지 extras 도 JSON 직렬화 가능한 값만 포함
             for (key, val) in extras where key != "creative_id" && key != "line_item_id" {
                 extrasDict[key] = JSONSerialization.isValidJSONObject(["k": val]) ? val : "\(val)"
             }
             if !extrasDict.isEmpty { dict["extrasDictionary"] = extrasDict }
         }
 
-        // loadedAdNetwork: 실제 광고를 채운 네트워크 정보
         if let loaded = responseInfo.loadedAdNetworkResponseInfo {
             var networkDict: [String: Any] = [:]
             networkDict["adNetworkClassName"] = loaded.adNetworkClassName
@@ -3070,7 +3057,6 @@ extension InAppBrowserViewController {
             if let instName   = loaded.adSourceInstanceName { networkDict["adSourceInstanceName"] = instName }
             if let instId     = loaded.adSourceInstanceID   { networkDict["adSourceInstanceID"] = instId }
             networkDict["latencyMs"] = Int(loaded.latency * 1000)
-            // adUnitMapping: Ad Manager UI에서 설정한 네트워크 구성
             if !loaded.adUnitMapping.isEmpty {
                 let safeMapping = loaded.adUnitMapping.compactMapValues { val -> Any? in
                     JSONSerialization.isValidJSONObject(["k": val]) ? val : "\(val)"
@@ -3083,7 +3069,6 @@ extension InAppBrowserViewController {
             dict["loadedAdNetwork"] = networkDict
         }
 
-        // adNetworkInfoArray: 워터폴 전체 네트워크 시도 목록
         let networkArray: [[String: Any]] = responseInfo.adNetworkInfoArray.map { net in
             var n: [String: Any] = [:]
             n["adNetworkClassName"] = net.adNetworkClassName
@@ -3120,7 +3105,6 @@ extension InAppBrowserViewController {
         ]
     }
 
-    /// responseInfo를 포함한 successInfo JSON 문자열 생성
     func buildSuccessInfoJSON(adType: String, adUnit: String, status: String,
                               responseInfo: ResponseInfo? = nil,
                               extra: [String: Any] = [:]) -> String {
@@ -3129,6 +3113,7 @@ extension InAppBrowserViewController {
             "adType": adType,
             "adUnit": adUnit,
             "sdkVersion": Self.SDK_VERSION,
+            "gmaSdkVersion": Self.GOOGLE_SDK_VERSION,
             "status": status
         ]
         for (k, v) in extra { dict[k] = v }
@@ -3141,13 +3126,11 @@ extension InAppBrowserViewController {
            let str  = String(data: data, encoding: .utf8) {
             return str
         }
-        // fallback
         return "{\"timestamp\":\(dict["timestamp"]!),\"adType\":\"\(adType)\",\"adUnit\":\"\(adUnit)\",\"status\":\"\(status)\"}"
     }
 
 
 
-    // 웹에서 타겟팅 키-밸류 설정
     func setAdTargeting(jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
@@ -3156,17 +3139,14 @@ extension InAppBrowserViewController {
         customAdTargeting = dict
     }
 
-    // 웹에서 타겟팅 키-밸류 추가/업데이트
     func updateAdTargeting(key: String, value: String) {
         customAdTargeting[key] = value
     }
 
-    // 타겟팅 초기화
     func clearAdTargeting() {
         customAdTargeting = [:]
     }
 
-    // 광고 메타데이터를 웹으로 전달
     func notifyAdMetadata(_ metadata: [String: Any], adType: String, callbackFunction: String) {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: metadata),
               let jsonString = String(data: jsonData, encoding: .utf8) else { return }
@@ -3325,7 +3305,6 @@ extension InAppBrowserViewController {
             
             self.rewardedAd = ad
             self.currentAdUnitId = currentAdUnit
-            // 광고 메타데이터 수신 리스너 등록
             DispatchQueue.main.async {
                 ad?.adMetadataDelegate = self
             }
@@ -3604,7 +3583,7 @@ extension InAppBrowserViewController {
     private func createSimpleCancelInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"cancelled","eventType":"AD_CANCELLED","message":"User cancelled the ad","targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","status":"cancelled","eventType":"AD_CANCELLED","message":"User cancelled the ad","targeting":\(targetingJSONString())}
         """
     }
     
@@ -3614,7 +3593,7 @@ extension InAppBrowserViewController {
         let errorCode = (error as NSError).code
 
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","errorType":"PRESENT_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"PRESENTATION_FAILED","isRetryable":false,"targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","errorType":"PRESENT_ERROR","errorCode":\(errorCode),"message":"\(errorMessage)","errorCategory":"PRESENTATION_FAILED","isRetryable":false,"targeting":\(targetingJSONString())}
         """
     }
 }
@@ -3897,7 +3876,7 @@ extension InAppBrowserViewController {
     private func createTimeoutErrorInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"timeout","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(preloadTimeoutMs),"targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","status":"timeout","errorCategory":"TIMEOUT","isRetryable":true,"timeoutMs":\(preloadTimeoutMs),"targeting":\(targetingJSONString())}
         """
     }
     
@@ -3946,7 +3925,6 @@ extension InAppBrowserViewController {
         let errorCode = nsError.code
         let errorMessage = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
 
-        // 실패 시에도 GADErrorUserInfoKeyResponseInfo에서 ResponseInfo 꺼낼 수 있음
         let failedResponseInfo = nsError.userInfo[GADErrorUserInfoKeyResponseInfo] as? ResponseInfo
         let riDict = buildResponseInfoDict(failedResponseInfo)
 
@@ -3955,6 +3933,7 @@ extension InAppBrowserViewController {
             "adType": adType,
             "adUnit": adUnit,
             "sdkVersion": Self.SDK_VERSION,
+            "gmaSdkVersion": Self.GOOGLE_SDK_VERSION,
             "errorType": "LOAD_ERROR",
             "errorCode": errorCode,
             "message": errorMessage,
@@ -4025,7 +4004,7 @@ extension InAppBrowserViewController {
     private func createNoPreloadedAdInfo(adType: String, adUnit: String) -> String {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         return """
-        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","status":"no_preloaded_ad","errorCategory":"NO_PRELOADED_AD","isRetryable":false,"message":"No preloaded ad available","targeting":\(targetingJSONString())}
+        {"timestamp":\(timestamp),"adType":"\(adType)","adUnit":"\(adUnit)","sdkVersion":"\(Self.SDK_VERSION)","gmaSdkVersion":"\(Self.GOOGLE_SDK_VERSION)","status":"no_preloaded_ad","errorCategory":"NO_PRELOADED_AD","isRetryable":false,"message":"No preloaded ad available","targeting":\(targetingJSONString())}
         """
     }
     
@@ -4469,7 +4448,6 @@ extension Bundle {
     }
 }
 
-// MARK: - AdMetadataDelegate (광고 메타데이터 수신 → 웹으로 전달)
 extension InAppBrowserViewController: @MainActor AdMetadataDelegate {
     @MainActor
     func adMetadataDidChange(_ ad: any AdMetadataProvider) {
@@ -4491,14 +4469,12 @@ extension InAppBrowserViewController: @MainActor AdMetadataDelegate {
         if let dealId = metadata[GADAdMetadataKey(rawValue: "DealId")] as? String, !dealId.isEmpty {
             metaDict["DealId"] = dealId
         }
-        // 재생 길이 (ms + sec 함께 제공)
         if let durationMs = metadata[GADAdMetadataKey(rawValue: "CreativeDurationMs")] as? Int {
             metaDict["CreativeDurationMs"] = durationMs
             if durationMs > 0 {
                 metaDict["CreativeDurationSec"] = durationMs / 1000
             }
         }
-        // TraffickingParameters: raw 문자열 + 파싱된 딕셔너리 함께 제공
         if let traffickingParams = metadata[GADAdMetadataKey(rawValue: "TraffickingParameters")] as? String,
            !traffickingParams.isEmpty {
             metaDict["TraffickingParameters"] = traffickingParams
@@ -4516,7 +4492,6 @@ extension InAppBrowserViewController: @MainActor AdMetadataDelegate {
         if let mediaURL = metadata[GADAdMetadataKey(rawValue: "MediaURL")] as? String, !mediaURL.isEmpty {
             metaDict["MediaURL"] = mediaURL
         }
-        // Wrappers: VAST 래퍼 광고일 때만 존재 (가장 안쪽 → 가장 바깥쪽 순)
         if let wrappers = metadata[GADAdMetadataKey(rawValue: "Wrappers")] as? [[String: String]], !wrappers.isEmpty {
             var wrapperList: [[String: String]] = []
             for wrapper in wrappers {
