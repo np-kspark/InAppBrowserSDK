@@ -1,5 +1,6 @@
 import UIKit
 import GoogleMobileAds
+import AVFoundation
 
 @MainActor
 public class InAppBrowserManager {
@@ -23,6 +24,8 @@ public class InAppBrowserManager {
         
         let cookieStorage = HTTPCookieStorage.shared
         cookieStorage.cookieAcceptPolicy = .always
+        
+
         
         MobileAds.shared.start(completionHandler: nil)
         isInitialized = true

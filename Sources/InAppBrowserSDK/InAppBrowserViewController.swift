@@ -7,7 +7,7 @@ import Foundation
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.2.6"
+    static let SDK_VERSION = "1.3.0"
     static var GOOGLE_SDK_VERSION: String {
         let v = MobileAds.shared.versionNumber
         return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
