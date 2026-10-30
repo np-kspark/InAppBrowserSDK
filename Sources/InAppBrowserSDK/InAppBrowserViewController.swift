@@ -5,15 +5,35 @@ import AppTrackingTransparency
 import AdSupport
 import Foundation
 
+/// WKUserContentController 는 메시지 핸들러를 강하게 잡는다.
+/// 뷰컨트롤러를 그대로 등록하면
+/// VC → webView → configuration → userContentController → VC 순환 참조가 생겨
+/// 어떤 경로로 닫아도 VC 가 해제되지 않는다. 약한 참조로 끊는다.
+@MainActor
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: (any WKScriptMessageHandler)?
+
+    init(target: any WKScriptMessageHandler) {
+        self.target = target
+        super.init()
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
+    }
+}
+
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.3.0"
+    static let SDK_VERSION = "1.3.2"
     static var GOOGLE_SDK_VERSION: String {
         let v = MobileAds.shared.versionNumber
         return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
     }
     
     private var webView: WKWebView!
+    private var isBridgeTornDown = false
     private var loadingCover: UIView!
     private var loadingIndicator: UIView!
     private var rewardedAd: RewardedAd?
@@ -596,6 +616,22 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
             }
         }
     }
+    /// 메시지 핸들러 · 델리게이트 · 유저스크립트를 모두 해제한다.
+    /// 닫기 버튼 · 뒤로가기 종료 · closeWebView() 어느 경로로 닫히든 호출되어야
+    /// 뷰컨트롤러가 해제된다. 여러 번 호출되어도 안전하다.
+    private func teardownWebViewBridge() {
+        guard !isBridgeTornDown else { return }
+        isBridgeTornDown = true
+
+        guard let webView = webView else { return }
+
+        webView.stopLoading()
+        webView.configuration.userContentController.removeAllUserScripts()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
     public func closeWebView(){
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -612,17 +648,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
             
             InAppBrowserManager.shared.notifyBrowserClosed()
             self.dismiss(animated: true) { [weak self] in
-                guard let self = self else { return }
-                
-                self.webView.stopLoading()
-                self.webView.configuration.userContentController.removeAllUserScripts()
-                
-                do {
-                    self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "iOSInterface")
-                }
-                
-                self.webView.navigationDelegate = nil
-                self.webView.uiDelegate = nil
+                self?.teardownWebViewBridge()
             }
         }
     }
@@ -883,7 +909,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         let cookieStorage = HTTPCookieStorage.shared
         cookieStorage.cookieAcceptPolicy = .always
         
-        userContentController.add(self, name: "iOSInterface")
+        userContentController.add(WeakScriptMessageHandler(target: self), name: "iOSInterface")
         config.userContentController = userContentController
         config.allowsInlineMediaPlayback = true
         
@@ -1573,7 +1599,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
 
     @objc private func performCloseAction() {
         InAppBrowserManager.shared.notifyBrowserClosed()
-        dismiss(animated: true)
+        dismiss(animated: true) { [weak self] in
+            self?.teardownWebViewBridge()
+        }
     }
     func resetHistory() {
         navigationHistory.removeAll()
@@ -1754,8 +1782,8 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
             InAppBrowserManager.shared.notifyBrowserClosed()
             
             DispatchQueue.main.async { [weak self] in
-                self?.dismiss(animated: true) {
-                    
+                self?.dismiss(animated: true) { [weak self] in
+                    self?.teardownWebViewBridge()
                 }
             }
         }
