@@ -26,7 +26,7 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.3.3"
+    static let SDK_VERSION = "1.3.4"
     static var GOOGLE_SDK_VERSION: String {
         let v = MobileAds.shared.versionNumber
         return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
@@ -36,6 +36,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     private var isBridgeTornDown = false
     private var loadErrorView: UIView?
     private var failedURL: URL?
+    private var hasLoadedPage = false
     private var rewardedLoadSeq: Int = 0
     private var loadingCover: UIView!
     private var loadingIndicator: UIView!
@@ -1619,6 +1620,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         hideLoadingCover()
         hideLoadErrorView()
+        if webView == self.webView {
+            hasLoadedPage = true
+        }
         
         if let currentURL = webView.url?.absoluteString {
             if !isNavigatingBack {
@@ -2238,8 +2242,8 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
 
-        if webView == self.webView, isNetworkError(error) {
-            showLoadErrorView(failedURL: failingURL(of: error))
+        if webView == self.webView {
+            handleLoadFailure(error)
         }
     }
     private func checkInitialATTStatus() {
@@ -2336,17 +2340,31 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         hideLoadingCover()
 
+        if webView == self.webView {
+            handleLoadFailure(error)
+        }
+    }
+
+    // MARK: - 로드 실패 처리
+
+    /// 로드 실패를 한 곳에서 처리한다.
+    /// 웹 문서가 살아 있으면 상태만 웹으로 넘기고, 화면은 웹이 그린다.
+    /// 첫 페이지부터 실패해 알릴 웹이 없을 때만 네이티브 최소 화면을 띄운다.
+    private func handleLoadFailure(_ error: Error) {
         let nsError = error as NSError
         if nsError.code == NSURLErrorCancelled || nsError.code == 102 {
             return
         }
 
-        if webView == self.webView {
-            showLoadErrorView(failedURL: failingURL(of: error))
+        let url = failingURL(of: error)
+        failedURL = url
+
+        if hasLoadedPage {
+            notifyWebOfLoadError(nsError, url: url)
+        } else {
+            showLoadErrorView(failedURL: url)
         }
     }
-
-    // MARK: - 로드 실패 안내
 
     /// 실패한 주소를 오류 정보에서 꺼낸다.
     private func failingURL(of error: Error) -> URL? {
@@ -2356,26 +2374,65 @@ extension InAppBrowserViewController: WKNavigationDelegate {
         return nil
     }
 
-    /// 네트워크 때문에 실패한 오류인지 판별한다.
-    private func isNetworkError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        guard nsError.domain == NSURLErrorDomain else { return false }
-        switch nsError.code {
+    /// 웹이 분기할 수 있도록 오류 코드를 상태 문자열로 바꾼다.
+    private func loadErrorState(of error: NSError) -> String {
+        guard error.domain == NSURLErrorDomain else { return "unknown" }
+        switch error.code {
         case NSURLErrorNotConnectedToInternet,
-             NSURLErrorNetworkConnectionLost,
-             NSURLErrorTimedOut,
-             NSURLErrorCannotFindHost,
-             NSURLErrorCannotConnectToHost,
-             NSURLErrorDNSLookupFailed,
-             NSURLErrorInternationalRoamingOff,
-             NSURLErrorDataNotAllowed:
-            return true
+             NSURLErrorDataNotAllowed,
+             NSURLErrorInternationalRoamingOff:
+            return "offline"
+        case NSURLErrorTimedOut:
+            return "timeout"
+        case NSURLErrorNetworkConnectionLost:
+            return "connectionLost"
+        case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
+            return "hostNotFound"
+        case NSURLErrorCannotConnectToHost:
+            return "serverUnreachable"
+        case NSURLErrorSecureConnectionFailed,
+             NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateUntrusted,
+             NSURLErrorServerCertificateHasUnknownRoot,
+             NSURLErrorServerCertificateNotYetValid:
+            return "sslError"
         default:
-            return false
+            return "unknown"
         }
     }
 
-    /// 자동으로 다시 부르지 않고 안내 화면을 띄운다. [다시 시도] 를 누를 때만 재요청한다.
+    /// 로드 실패 상태를 웹으로 넘긴다. 문구와 화면은 웹이 정한다.
+    private func notifyWebOfLoadError(_ error: NSError, url: URL?) {
+        let detail: [String: Any] = [
+            "state": loadErrorState(of: error),
+            "code": error.code,
+            "message": error.localizedDescription,
+            "url": url?.absoluteString ?? "",
+            "canRetry": true
+        ]
+
+        guard let data = try? JSONSerialization.data(withJSONObject: detail),
+              let json = String(data: data, encoding: .utf8) else { return }
+
+        let script = """
+        (function() {
+            try {
+                var detail = \(json);
+                window._pendingPageLoadError = detail;
+                if (typeof window.onPageLoadError === 'function') {
+                    window.onPageLoadError(detail);
+                }
+                window.dispatchEvent(new CustomEvent('pageLoadError', { detail: detail }));
+                return true;
+            } catch(e) {
+                return false;
+            }
+        })();
+        """
+        webView.evaluateJavaScriptSafely(script)
+    }
+
+    /// 알릴 웹이 없을 때만 쓰는 최소 안내 화면.
     private func showLoadErrorView(failedURL: URL?) {
         self.failedURL = failedURL
         guard loadErrorView == nil else { return }
@@ -2434,6 +2491,11 @@ extension InAppBrowserViewController: WKNavigationDelegate {
     }
 
     @objc private func retryAfterLoadError() {
+        retryLoad()
+    }
+
+    /// 실패한 주소를 다시 부른다. 웹의 재시도 버튼도 이 경로를 쓴다.
+    func retryLoad() {
         hideLoadErrorView()
         if let url = failedURL ?? webView.url ?? config.url.flatMap({ URL(string: optimizeURL($0)) }) {
             webView.load(URLRequest(url: url))
@@ -2441,7 +2503,8 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             webView.reload()
         }
     }
-    
+
+
     private func injectKakaoSupportScript() {
         let kakaoScript = """
         (function() {
@@ -2951,6 +3014,9 @@ extension InAppBrowserViewController: WKScriptMessageHandler {
                        let value = body["value"] as? String {
                         updateAdTargeting(key: key, value: value)
                     }
+
+                case "retryLoad":
+                    retryLoad()
 
                 case "clearAdTargeting":
                     clearAdTargeting()

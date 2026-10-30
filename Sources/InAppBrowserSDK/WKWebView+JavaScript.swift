@@ -412,6 +412,16 @@ extension InAppBrowserViewController {
                         type: 'getAdTargeting',
                         callbackFunction: cbName
                     });
+                },
+
+                retryLoad: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'retryLoad'
+                    });
+                },
+
+                getLastLoadError: function() {
+                    return window._pendingPageLoadError || null;
                 }
             };
             

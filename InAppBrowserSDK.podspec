@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = "InAppBrowserSDK"
-  spec.version      = "1.3.3"
+  spec.version      = "1.3.4"
   spec.summary      = "InApp Browser SDK"
   spec.description  = "InApp Browser SDK for iOS"
   spec.homepage     = "https://github.com/np-kspark/InAppBrowserSDK"
