@@ -33,11 +33,9 @@ public class AdConsentManager {
     }
     
     public func requestConsent(from viewController: UIViewController, completion: @escaping (Bool) -> Void) {
-
         showCustomConsentDialog(from: viewController, completion: completion)
     }
     
-
     private func showCustomConsentDialog(from viewController: UIViewController, completion: @escaping (Bool) -> Void) {
         let alertController = UIAlertController(
             title: "광고 ID 수집 동의",

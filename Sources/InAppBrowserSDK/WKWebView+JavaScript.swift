@@ -382,6 +382,36 @@ extension InAppBrowserViewController {
                     window.webkit.messageHandlers.iOSInterface.postMessage({
                         type: 'triggerBackAction'
                     });
+                },
+
+                setAdTargeting: function(jsonString) {
+                    var targeting = (typeof jsonString === 'string') ? JSON.parse(jsonString) : jsonString;
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'setAdTargeting',
+                        targeting: targeting
+                    });
+                },
+
+                updateAdTargeting: function(key, value) {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'updateAdTargeting',
+                        key: key,
+                        value: value
+                    });
+                },
+
+                clearAdTargeting: function() {
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'clearAdTargeting'
+                    });
+                },
+
+                getAdTargeting: function(callbackFunction) {
+                    var cbName = (typeof callbackFunction === 'string' && callbackFunction) ? callbackFunction : 'onGetAdTargetingResult';
+                    window.webkit.messageHandlers.iOSInterface.postMessage({
+                        type: 'getAdTargeting',
+                        callbackFunction: cbName
+                    });
                 }
             };
             

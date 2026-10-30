@@ -26,7 +26,7 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.3.2"
+    static let SDK_VERSION = "1.3.3"
     static var GOOGLE_SDK_VERSION: String {
         let v = MobileAds.shared.versionNumber
         return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
@@ -34,6 +34,9 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     
     private var webView: WKWebView!
     private var isBridgeTornDown = false
+    private var loadErrorView: UIView?
+    private var failedURL: URL?
+    private var rewardedLoadSeq: Int = 0
     private var loadingCover: UIView!
     private var loadingIndicator: UIView!
     private var rewardedAd: RewardedAd?
@@ -490,8 +493,10 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     override func viewDidLoad() {
         super.viewDidLoad()
         setupNewMainLayout()
-        setupWebView()
+        // 주입 스크립트는 첫 페이지를 불러오기 전에 등록한다.
+        // 로드가 시작된 문서에는 나중에 등록한 사용자 스크립트가 들어가지 않는다.
         setupJavaScriptInterface(for: self.webView)
+        setupWebView()
         
         syncCookiesFromHTTPCookieStorage()
         
@@ -838,7 +843,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
         
         if #available(iOS 16.4, *) {
-            webView.isInspectable = true
+            webView.isInspectable = config.isDebugEnabled
         }
     }
     private func setupMainLayout() {
@@ -877,7 +882,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
         }
         
         if #available(iOS 16.4, *) {
-            webView.isInspectable = true
+            webView.isInspectable = self.config.isDebugEnabled
         }
         
         view.addSubview(webView)
@@ -1390,11 +1395,14 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
                 
                 var request = URLRequest(url: url)
                 
-                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-                request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
-                request.setValue("no-cache", forHTTPHeaderField: "Pragma")
-                request.setValue("0", forHTTPHeaderField: "Expires")
-                request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
+                // 설정이 켜져 있을 때만 캐시를 무효화한다.
+                if config.preventCache {
+                    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                    request.setValue("no-cache, no-store, must-revalidate", forHTTPHeaderField: "Cache-Control")
+                    request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+                    request.setValue("0", forHTTPHeaderField: "Expires")
+                    request.setValue(String(Int(Date().timeIntervalSince1970)), forHTTPHeaderField: "X-Requested-With")
+                }
                 
                 request.httpShouldHandleCookies = true
                 
@@ -1610,6 +1618,7 @@ class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDele
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         hideLoadingCover()
+        hideLoadErrorView()
         
         if let currentURL = webView.url?.absoluteString {
             if !isNavigatingBack {
@@ -2226,6 +2235,11 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             
             isNavigatingBack = false
             closeApp()
+            return
+        }
+
+        if webView == self.webView, isNetworkError(error) {
+            showLoadErrorView(failedURL: failingURL(of: error))
         }
     }
     private func checkInitialATTStatus() {
@@ -2327,9 +2341,104 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             return
         }
 
-        if let urlString = config.url, let optimizedURL = URL(string: optimizeURL(urlString)) {
-            let request = URLRequest(url: optimizedURL)
-            webView.load(request)
+        if webView == self.webView {
+            showLoadErrorView(failedURL: failingURL(of: error))
+        }
+    }
+
+    // MARK: - 로드 실패 안내
+
+    /// 실패한 주소를 오류 정보에서 꺼낸다.
+    private func failingURL(of error: Error) -> URL? {
+        let nsError = error as NSError
+        if let url = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL { return url }
+        if let str = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String { return URL(string: str) }
+        return nil
+    }
+
+    /// 네트워크 때문에 실패한 오류인지 판별한다.
+    private func isNetworkError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        switch nsError.code {
+        case NSURLErrorNotConnectedToInternet,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorTimedOut,
+             NSURLErrorCannotFindHost,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorDNSLookupFailed,
+             NSURLErrorInternationalRoamingOff,
+             NSURLErrorDataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 자동으로 다시 부르지 않고 안내 화면을 띄운다. [다시 시도] 를 누를 때만 재요청한다.
+    private func showLoadErrorView(failedURL: URL?) {
+        self.failedURL = failedURL
+        guard loadErrorView == nil else { return }
+
+        let container = UIView()
+        container.backgroundColor = .systemBackground
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = UILabel()
+        title.text = "연결할 수 없습니다"
+        title.font = .boldSystemFont(ofSize: 18)
+        title.textAlignment = .center
+
+        let message = UILabel()
+        message.text = "인터넷 연결을 확인한 뒤 다시 시도해 주세요."
+        message.font = .systemFont(ofSize: 14)
+        message.textColor = .secondaryLabel
+        message.numberOfLines = 0
+        message.textAlignment = .center
+
+        let retry = UIButton(type: .system)
+        retry.setTitle("다시 시도", for: .normal)
+        retry.titleLabel?.font = .boldSystemFont(ofSize: 16)
+        retry.setTitleColor(.white, for: .normal)
+        retry.backgroundColor = .systemBlue
+        retry.layer.cornerRadius = 8
+        retry.contentEdgeInsets = .init(top: 12, left: 28, bottom: 12, right: 28)
+        retry.addTarget(self, action: #selector(retryAfterLoadError), for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [title, message, retry])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        webViewContainer.addSubview(container)
+        loadErrorView = container
+
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: webViewContainer.topAnchor),
+            container.leadingAnchor.constraint(equalTo: webViewContainer.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: webViewContainer.trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: webViewContainer.bottomAnchor),
+
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24)
+        ])
+    }
+
+    private func hideLoadErrorView() {
+        loadErrorView?.removeFromSuperview()
+        loadErrorView = nil
+    }
+
+    @objc private func retryAfterLoadError() {
+        hideLoadErrorView()
+        if let url = failedURL ?? webView.url ?? config.url.flatMap({ URL(string: optimizeURL($0)) }) {
+            webView.load(URLRequest(url: url))
+        } else {
+            webView.reload()
         }
     }
     
@@ -2432,9 +2541,14 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             let currentAdUnit = adUnit.trimmingCharacters(in: .whitespacesAndNewlines)
             
             adLoadTimeoutWorkItem?.cancel()
+
+            // 요청마다 순번을 붙여 최신 요청의 결과만 받는다.
+            // 시간 초과된 요청의 광고가 늦게 도착해 다음 요청 결과로 섞이는 것을 막는다.
+            rewardedLoadSeq += 1
+            let seq = rewardedLoadSeq
             
             let timeoutWork = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, seq == self.rewardedLoadSeq else { return }
                 
                 if self.isLoadingAd {
                     if self.isLoadingCoverEnabled {
@@ -2452,7 +2566,7 @@ extension InAppBrowserViewController: WKNavigationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
             
             RewardedAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
-                guard let self = self else { return }
+                guard let self = self, seq == self.rewardedLoadSeq else { return }
                 
                 self.adLoadTimeoutWorkItem?.cancel()
                 
@@ -3275,9 +3389,13 @@ extension InAppBrowserViewController {
         
         let adUnits = adUnit.components(separatedBy: ";")
         let currentAdUnit = adUnits[adUnitIndexCall].trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 요청마다 순번을 붙여 최신 요청의 결과만 받는다.
+        rewardedLoadSeq += 1
+        let seq = rewardedLoadSeq
         
         let timeoutWork = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, seq == self.rewardedLoadSeq else { return }
             
             if self.isLoadingAd {
                 self.isAdRequestTimeOut = true
@@ -3295,7 +3413,7 @@ extension InAppBrowserViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + adLoadTimeoutInterval, execute: timeoutWork)
         
         RewardedAd.load(with: currentAdUnit, request: makeAdRequest()) { [weak self] ad, error in
-            guard let self = self else { return }
+            guard let self = self, seq == self.rewardedLoadSeq else { return }
             
             self.adLoadTimeoutWorkItem?.cancel()
             self.adLoadTimeoutWorkItem = nil

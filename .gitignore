@@ -12,7 +12,8 @@ xcuserdata/
 *.ipa
 *.dSYM.zip
 *.dSYM
-
+.DS_Store
+*.resolved
 ## Playgrounds
 timeline.xctimeline
 playground.xcworkspace
@@ -60,3 +61,11 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+Sources/InAppBrowserSDK/AdConsentManager.swift
+Sources/InAppBrowserSDK/InAppBrowserConfig.swift
+Sources/InAppBrowserSDK/InAppBrowserManager.swift
+Sources/InAppBrowserSDK/InAppBrowserViewController.swift
+Sources/InAppBrowserSDK/WKWebView+JavaScript.swift
+
+# vim swap
+*.swp
