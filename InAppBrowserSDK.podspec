@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = "InAppBrowserSDK"
-  spec.version      = "1.3.4"
+  spec.version      = "1.3.5"
   spec.summary      = "InApp Browser SDK"
   spec.description  = "InApp Browser SDK for iOS"
   spec.homepage     = "https://github.com/np-kspark/InAppBrowserSDK"
@@ -17,5 +17,5 @@ Pod::Spec.new do |spec|
   
   
   # GoogleMobileAds 의존성 추가
-  spec.dependency 'Google-Mobile-Ads-SDK'
+  spec.dependency 'Google-Mobile-Ads-SDK', '>= 12.0', '< 14.0'
 end
