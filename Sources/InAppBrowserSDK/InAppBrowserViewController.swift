@@ -26,7 +26,7 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
 
 @MainActor
 class InAppBrowserViewController: UIViewController, WKUIDelegate, BannerViewDelegate {
-    static let SDK_VERSION = "1.3.4"
+    static let SDK_VERSION = "1.3.5"
     static var GOOGLE_SDK_VERSION: String {
         let v = MobileAds.shared.versionNumber
         return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
